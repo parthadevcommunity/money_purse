@@ -95,7 +95,7 @@ def refresh_price_cache(connection, symbol, ticker):
         (symbol,),
     ).fetchone()
     if last_checked and last_checked[0] == today_text:
-        return
+        return False
 
     last_trade_date = connection.execute(
         "SELECT MAX(trade_date) FROM daily_prices WHERE symbol = ?",
@@ -165,6 +165,8 @@ def refresh_price_cache(connection, symbol, ticker):
         (symbol, today_text),
     )
     connection.commit()
+    time.sleep(0.3)
+    return True
 
 
 def load_cached_prices(connection, symbol):
@@ -208,9 +210,16 @@ def analyse_stock(symbol, ticker_map, connection):
             print("Price update failed:", symbol, refresh_error)
 
         df = load_cached_prices(connection, symbol)
+        # Yahoo can include placeholder rows with no traded volume. They are
+        # not trading sessions and would otherwise distort rolling indicators
+        # and return lookbacks for illiquid stocks.
+        if not df.empty:
+            df = df.loc[
+                pd.to_numeric(df["Volume"], errors="coerce").fillna(0) > 0
+            ]
 
         if df.empty or len(df) < 200:
-            print("Insufficient data:", symbol)
+            print("Insufficient traded history:", symbol)
             return None
 
         if isinstance(df.columns, pd.MultiIndex):
@@ -365,7 +374,6 @@ try:
         result = analyse_stock(stock, ticker_map, price_db)
         if result is not None:
             results.append(result)
-        time.sleep(0.3)
 finally:
     price_db.close()
 
