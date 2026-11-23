@@ -1,0 +1,20 @@
+# YouTube Metadata and Video Parsing Engine
+yt-dlp>=2025.01.01
+
+# Subtitle Data and Caption Fetching Core API
+youtube-transcript-api>=0.6.3
+
+# Automated Translation Core Engine (Multi-language Translation Link)
+deep-translator>=1.11.4
+
+# High-Performance Data Analysis & Structuring Framework
+pandas>=2.2.0
+
+# Vector Database and Document Ingestion Support
+chromadb>=0.4.24
+
+# Tabular Terminal Formatting Engine
+tabulate>=0.9.0
+
+yfinance
+numpy
