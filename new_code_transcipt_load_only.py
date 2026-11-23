@@ -3,175 +3,50 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import requests
+import sqlite3
 import time
-import csv
-import re
-import difflib
 from io import StringIO
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # ==========================================
 # SETTINGS
 # ==========================================
 
-INDEX_NAME = "NIFTY100 + BSE500"
-
-INDEX_URL = (
-    "https://www.niftyindices.com/IndexConstituent/"
-    "ind_nifty100list.csv"
-)
-BSE500_URL = (
-    "https://www.bseindices.com/AsiaIndexAPI/api/"
-    "Codewise_IndicesDownload/w?code=17"
-)
+INDEX_NAME = "NSE listed stocks"
 NSE_SYMBOLS_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
 
-OUTPUT_CSV = "NIFTY100_BSE500_Momentum.csv"
-OUTPUT_EXCEL = "NIFTY100_BSE500_Momentum.xlsx"
+OUTPUT_CSV = "NSE_All_Stocks_Momentum.csv"
+OUTPUT_EXCEL = "NSE_All_Stocks_Momentum.xlsx"
+DATABASE_PATH = Path(__file__).with_name("nse_stock_prices.sqlite3")
+INITIAL_HISTORY_DAYS = 400
+REFRESH_OVERLAP_DAYS = 7
+INDIA_TZ = ZoneInfo("Asia/Kolkata")
 
 # ==========================================
-# GET LATEST NIFTY 100 + BSE 500 STOCK LIST
+# GET CURRENT NSE STOCK UNIVERSE
 # ==========================================
-
-def normalize_company_name(name):
-    name = re.sub(r"[^A-Z0-9]", "", str(name).upper())
-    return re.sub(r"(LIMITED|LTD)$", "", name)
-
-
-def match_nse_symbol(company_name, normalized_names, exact_map):
-    """Map a BSE company name to its NSE symbol for Yahoo Finance."""
-    normalized = normalize_company_name(company_name)
-    if normalized in exact_map:
-        return exact_map[normalized]
-
-    # BSE's downloadable list truncates some company names. Accept only a
-    # high-confidence, clearly better match to avoid assigning the wrong stock.
-    matches = difflib.get_close_matches(
-        normalized, normalized_names, n=2, cutoff=0.90
-    )
-    if not matches:
-        return None
-
-    best = matches[0]
-    best_score = difflib.SequenceMatcher(None, normalized, best).ratio()
-    if len(matches) > 1:
-        second_score = difflib.SequenceMatcher(None, normalized, matches[1]).ratio()
-        if best_score - second_score < 0.03:
-            return None
-
-    return exact_map.get(best)
 
 def get_stocks():
-
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
     response = requests.get(
-        INDEX_URL,
-        headers=headers,
-        timeout=30
+        NSE_SYMBOLS_URL,
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=30,
     )
-
     response.raise_for_status()
+    nse_master = pd.read_csv(StringIO(response.text))
+    if "SYMBOL" not in nse_master.columns:
+        raise ValueError("NSE equity list does not contain a SYMBOL column")
 
-    # Some versions of the constituents file contain unquoted commas in
-    # company names. That shifts the remaining columns and makes pandas'
-    # default C parser fail with "Expected N fields ... saw M".
-    rows = csv.reader(StringIO(response.text))
-    try:
-        header = next(rows)
-    except StopIteration as exc:
-        raise ValueError("NIFTY100 constituents response was empty") from exc
-
-    header = [column.strip().lstrip("\ufeff") for column in header]
-    if "Symbol" not in header:
-        preview = response.text[:200].replace("\n", " ")
-        raise ValueError(
-            "NIFTY100 constituents response does not contain a 'Symbol' "
-            f"column. Response starts with: {preview!r}"
-        )
-
-    # Preserve the fixed columns at the end of each row and fold any extra
-    # comma-separated pieces back into the first (company name) column.
-    expected_fields = len(header)
-    parsed_rows = []
-    for row in rows:
-        if len(row) > expected_fields:
-            extra = len(row) - expected_fields
-            row = [",".join(row[:extra + 1]), *row[extra + 1:]]
-        if len(row) == expected_fields:
-            parsed_rows.append(row)
-
-    constituents = pd.DataFrame(parsed_rows, columns=header)
-
-    nifty100_stocks = (
-        constituents["Symbol"]
+    stocks = (
+        nse_master["SYMBOL"]
         .dropna()
         .astype(str)
         .str.strip()
         .unique()
         .tolist()
     )
-
-    # BSE provides numeric security codes, so map company names to NSE
-    # trading symbols (Yahoo Finance's .NS format) using the NSE master list.
-    bse_response = requests.get(
-        BSE500_URL,
-        headers={**headers, "Referer": "https://www.bseindices.com/"},
-        timeout=30,
-    )
-    bse_response.raise_for_status()
-    bse_rows = csv.reader(StringIO(bse_response.text))
-    bse_header = next(bse_rows, [])
-    if bse_header[:2] != ["Constituents", "Symbol"]:
-        raise ValueError("BSE 500 download has an unexpected CSV format")
-
-    bse_records = []
-    for row in bse_rows:
-        if len(row) > len(bse_header):
-            extra = len(row) - len(bse_header)
-            row = [",".join(row[:extra + 1]), *row[extra + 1:]]
-        if len(row) == len(bse_header):
-            bse_records.append(row)
-    bse_constituents = pd.DataFrame(bse_records, columns=bse_header)
-    if not {"Constituents", "Symbol"}.issubset(bse_constituents.columns):
-        raise ValueError("BSE 500 download has an unexpected CSV format")
-
-    nse_response = requests.get(
-        NSE_SYMBOLS_URL,
-        headers=headers,
-        timeout=30,
-    )
-    nse_response.raise_for_status()
-    nse_master = pd.read_csv(StringIO(nse_response.text))
-    required_nse_columns = {"SYMBOL", "NAME OF COMPANY"}
-    if not required_nse_columns.issubset(nse_master.columns):
-        raise ValueError("NSE symbol master has an unexpected CSV format")
-
-    nse_master["_normalized_name"] = nse_master["NAME OF COMPANY"].map(
-        normalize_company_name
-    )
-    exact_map = dict(zip(nse_master["_normalized_name"], nse_master["SYMBOL"]))
-    normalized_names = list(exact_map)
-    company_names = bse_constituents["Constituents"].dropna().astype(str)
-
-    bse500_stocks = []
-    unmapped = []
-    for company_name in company_names:
-        symbol = match_nse_symbol(company_name, normalized_names, exact_map)
-        if symbol:
-            bse500_stocks.append(str(symbol).strip())
-        else:
-            unmapped.append(company_name)
-
-    # The BSE 500 contains most NIFTY 100 members. Keep the union and scan
-    # overlaps only once.
-    stocks = list(dict.fromkeys(nifty100_stocks + bse500_stocks))
-    if unmapped:
-        print(
-            f"Could not map {len(unmapped)} BSE 500 constituents to an NSE "
-            "symbol; they will be skipped."
-        )
 
     # Explicit symbol handling for Yahoo Finance
     ticker_map = {
@@ -184,11 +59,142 @@ def get_stocks():
     return stocks, ticker_map
 
 
+def open_price_database():
+    connection = sqlite3.connect(DATABASE_PATH, timeout=30)
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA synchronous=NORMAL")
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS daily_prices (
+            symbol TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            volume INTEGER,
+            PRIMARY KEY (symbol, trade_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_daily_prices_symbol_date
+            ON daily_prices(symbol, trade_date);
+        CREATE TABLE IF NOT EXISTS sync_state (
+            symbol TEXT PRIMARY KEY,
+            last_checked_date TEXT NOT NULL
+        );
+        """
+    )
+    connection.commit()
+    return connection
+
+
+def refresh_price_cache(connection, symbol, ticker):
+    today = datetime.now(INDIA_TZ).date()
+    today_text = today.isoformat()
+    last_checked = connection.execute(
+        "SELECT last_checked_date FROM sync_state WHERE symbol = ?",
+        (symbol,),
+    ).fetchone()
+    if last_checked and last_checked[0] == today_text:
+        return
+
+    last_trade_date = connection.execute(
+        "SELECT MAX(trade_date) FROM daily_prices WHERE symbol = ?",
+        (symbol,),
+    ).fetchone()[0]
+    if last_trade_date:
+        start_date = (
+            date.fromisoformat(last_trade_date)
+            - timedelta(days=REFRESH_OVERLAP_DAYS)
+        )
+    else:
+        start_date = today - timedelta(days=INITIAL_HISTORY_DAYS)
+
+    prices = yf.download(
+        ticker,
+        start=start_date.isoformat(),
+        end=(today + timedelta(days=1)).isoformat(),
+        interval="1d",
+        auto_adjust=True,
+        progress=False,
+        threads=False,
+    )
+
+    if not prices.empty:
+        if isinstance(prices.columns, pd.MultiIndex):
+            prices.columns = prices.columns.get_level_values(0)
+        rows = []
+        for timestamp, row in prices.iterrows():
+            trade_date = pd.Timestamp(timestamp).date().isoformat()
+            values = [row.get(name) for name in ("Open", "High", "Low", "Close", "Volume")]
+            if pd.isna(values[3]):
+                continue
+            rows.append((
+                symbol,
+                trade_date,
+                *(None if pd.isna(value) else float(value) for value in values[:4]),
+                None if pd.isna(values[4]) else int(values[4]),
+            ))
+
+        connection.executemany(
+            """
+            INSERT INTO daily_prices
+                (symbol, trade_date, open, high, low, close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, trade_date) DO UPDATE SET
+                open = excluded.open,
+                high = excluded.high,
+                low = excluded.low,
+                close = excluded.close,
+                volume = excluded.volume
+            WHERE daily_prices.open IS NOT excluded.open
+               OR daily_prices.high IS NOT excluded.high
+               OR daily_prices.low IS NOT excluded.low
+               OR daily_prices.close IS NOT excluded.close
+               OR daily_prices.volume IS NOT excluded.volume
+            """,
+            rows,
+        )
+
+    connection.execute(
+        """
+        INSERT INTO sync_state (symbol, last_checked_date)
+        VALUES (?, ?)
+        ON CONFLICT(symbol) DO UPDATE SET
+            last_checked_date = excluded.last_checked_date
+        """,
+        (symbol, today_text),
+    )
+    connection.commit()
+
+
+def load_cached_prices(connection, symbol):
+    first_date = (
+        datetime.now(INDIA_TZ).date() - timedelta(days=INITIAL_HISTORY_DAYS)
+    ).isoformat()
+    rows = connection.execute(
+        """
+        SELECT trade_date, open, high, low, close, volume
+        FROM daily_prices
+        WHERE symbol = ? AND trade_date >= ?
+        ORDER BY trade_date
+        """,
+        (symbol, first_date),
+    ).fetchall()
+    if not rows:
+        return pd.DataFrame()
+
+    frame = pd.DataFrame(
+        rows, columns=["Date", "Open", "High", "Low", "Close", "Volume"]
+    )
+    frame["Date"] = pd.to_datetime(frame["Date"])
+    return frame.set_index("Date")
+
+
 # ==========================================
 # CALCULATE MOMENTUM INDICATORS
 # ==========================================
 
-def analyse_stock(symbol, ticker_map):
+def analyse_stock(symbol, ticker_map, connection):
 
     ticker = ticker_map.get(
         symbol,
@@ -196,15 +202,12 @@ def analyse_stock(symbol, ticker_map):
     )
 
     try:
+        try:
+            refresh_price_cache(connection, symbol, ticker)
+        except Exception as refresh_error:
+            print("Price update failed:", symbol, refresh_error)
 
-        df = yf.download(
-            ticker,
-            period="1y",
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-            threads=False
-        )
+        df = load_cached_prices(connection, symbol)
 
         if df.empty or len(df) < 200:
             print("Insufficient data:", symbol)
@@ -352,25 +355,19 @@ print("\nDownloading", INDEX_NAME, "constituents...")
 
 stocks, ticker_map = get_stocks()
 
-print("Total stocks found:", len(stocks))
+print("Total NSE symbols found:", len(stocks))
 
 results = []
-
-for i, stock in enumerate(stocks, start=1):
-
-    print(
-        f"Scanning {i}/{len(stocks)}: {stock}"
-    )
-
-    result = analyse_stock(
-        stock,
-        ticker_map
-    )
-
-    if result is not None:
-        results.append(result)
-
-    time.sleep(0.3)
+price_db = open_price_database()
+try:
+    for i, stock in enumerate(stocks, start=1):
+        print(f"Scanning {i}/{len(stocks)}: {stock}")
+        result = analyse_stock(stock, ticker_map, price_db)
+        if result is not None:
+            results.append(result)
+        time.sleep(0.3)
+finally:
+    price_db.close()
 
 
 # ==========================================
@@ -422,7 +419,7 @@ final_df.to_excel(
 # ==========================================
 
 print("\n================================")
-print("NIFTY100 + BSE500 MOMENTUM RESULTS")
+print("NSE ALL-STOCKS MOMENTUM RESULTS")
 print("================================")
 
 print(
@@ -469,7 +466,7 @@ final_df.insert(
 # ==========================================
 
 print("\n" + "=" * 115)
-print("               NIFTY100 + BSE500 MOMENTUM LEADERBOARD")
+print("                NSE ALL-STOCKS MOMENTUM LEADERBOARD")
 print("=" * 115)
 
 print(f"Total stocks scanned : {len(final_df)}")

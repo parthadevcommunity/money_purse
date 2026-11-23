@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 
-DEFAULT_CSV = "NIFTY100_BSE500_Momentum.csv"
+DEFAULT_CSV = "NSE_All_Stocks_Momentum.csv"
 
 
 def main():
