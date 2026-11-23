@@ -3,8 +3,8 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
-*_Momentum.csv
-*_Momentum.xlsx
+*_Momentum*.csv
+*_Momentum*.xlsx
 Nifty_Momentum_Scanner.csv
 Nifty_Momentum_Scanner.xlsx
 youtube_cookies.txt

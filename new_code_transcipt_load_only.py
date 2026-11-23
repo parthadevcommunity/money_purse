@@ -19,6 +19,7 @@ NSE_SYMBOLS_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
 
 OUTPUT_CSV = "NSE_All_Stocks_Momentum.csv"
 OUTPUT_EXCEL = "NSE_All_Stocks_Momentum.xlsx"
+OUTPUT_V2_CSV = "NSE_All_Stocks_Momentum_V2.csv"
 DATABASE_PATH = Path(__file__).with_name("nse_stock_prices.sqlite3")
 INITIAL_HISTORY_DAYS = 400
 REFRESH_OVERLAP_DAYS = 7
@@ -503,6 +504,15 @@ final_df.to_csv(
     index=False
 )
 
+# Export a separate leaderboard sorted by the attached V2 selection matrix.
+v2_df = final_df.sort_values(
+    "Momentum_V2_Score_%",
+    ascending=False,
+    kind="stable",
+).reset_index(drop=True)
+v2_df.insert(0, "Momentum_V2_Rank", range(1, len(v2_df) + 1))
+v2_df.to_csv(OUTPUT_V2_CSV, index=False)
+
 final_df.to_excel(
     OUTPUT_EXCEL,
     index=False
@@ -662,6 +672,7 @@ print("=" * 115)
 
 print(f"1. {OUTPUT_CSV}")
 print(f"2. {OUTPUT_EXCEL}")
+print(f"3. {OUTPUT_V2_CSV}")
 
 print("\nTOP 5 MOMENTUM STOCKS")
 print(
