@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NSE Momentum Dashboard</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1020; --panel:#111a2e; --line:#26334d; --muted:#9aabc7; --text:#edf3ff; --accent:#7dd3fc; }
+    * { box-sizing:border-box }
+    body { margin:0; background:radial-gradient(ellipse at top,#172746,var(--bg) 55%); color:var(--text); font:14px/1.45 ui-sans-serif,system-ui,-apple-system,sans-serif }
+    main { max-width:1600px; margin:auto; padding:30px 24px 50px }
+    h1 { margin:0 0 5px; font-size:clamp(24px,4vw,36px); letter-spacing:-.04em }
+    .sub,.footnote { color:var(--muted) }
+    .toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:22px 0 14px }
+    input,select,button { min-height:42px; border:1px solid var(--line); border-radius:10px; background:#101a2d; color:var(--text); padding:0 13px; font:inherit }
+    input { flex:1 1 280px; max-width:500px }
+    select { min-width:160px }
+    button { cursor:pointer }
+    button:hover { border-color:var(--accent) }
+    #summary { margin-left:auto; color:var(--muted) }
+    .panel { overflow:hidden; border:1px solid var(--line); border-radius:14px; background:#0e1729eF; box-shadow:0 20px 60px #0003 }
+    .table-wrap { overflow:auto; max-height:72vh }
+    table { border-collapse:separate; border-spacing:0; width:max-content; min-width:100%; font-variant-numeric:tabular-nums }
+    th,td { padding:10px 12px; text-align:left; white-space:nowrap; border-bottom:1px solid #202d43 }
+    th { position:sticky; top:0; z-index:1; background:#17243a; color:#d9e7fb; font-size:12px; letter-spacing:.03em }
+    th button { all:unset; cursor:pointer; font:inherit }
+    th button:hover { color:var(--accent) }
+    tbody tr:hover { background:#15233a }
+    td:first-child, th:first-child { position:sticky; left:0; z-index:2; background:#111d31 }
+    th:first-child { z-index:3; background:#17243a }
+    .badge { display:inline-block; border-radius:999px; padding:3px 9px; font-size:12px; font-weight:650 }
+    .large-cap { color:#bbf7d0; background:#14532d66 }
+    .mid-cap { color:#fde68a; background:#713f1266 }
+    .small-cap { color:#bfdbfe; background:#1e3a8a66 }
+    .unclassified { color:#cbd5e1; background:#33415588 }
+    .status { color:#a5f3fc }
+    .footnote { margin:12px 2px; font-size:12px }
+    .error { padding:22px; color:#fecaca }
+    @media(max-width:650px) { main {padding:22px 12px} #summary {margin-left:0;width:100%} }
+  </style>
+</head>
+<body>
+<main>
+  <h1>NSE Momentum Dashboard</h1>
+  <div class="sub" id="source">Loading CSV…</div>
+  <div class="toolbar">
+    <input id="search" type="search" placeholder="Search stock name or ticker…" aria-label="Search stocks">
+    <select id="cap"><option value="">All market caps</option><option>Large Cap</option><option>Mid Cap</option><option>Small Cap</option><option>Unclassified</option></select>
+    <select id="status"><option value="">All momentum statuses</option></select>
+    <button id="reset" type="button">Reset filters</button>
+    <span id="summary"></span>
+  </div>
+  <section class="panel"><div class="table-wrap" id="table"><div class="error">Loading stock data…</div></div></section>
+  <div class="footnote" id="note"></div>
+</main>
+<script>
+const search = document.querySelector('#search'), capFilter = document.querySelector('#cap'), statusFilter = document.querySelector('#status');
+let allRows = [], columns = [], sortKey = 'Momentum_V2_Rank', sortDirection = 1;
+const numeric = new Set();
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function cellValue(row,key) { return row[key] ?? ''; }
+function compare(a,b,key) {
+  const av=cellValue(a,key), bv=cellValue(b,key), an=Number(av), bn=Number(bv);
+  if (av.trim() !== '' && bv.trim() !== '' && Number.isFinite(an) && Number.isFinite(bn)) return an-bn;
+  return av.localeCompare(bv, undefined, {numeric:true,sensitivity:'base'});
+}
+function render() {
+  const q=search.value.trim().toLowerCase(), cap=capFilter.value, status=statusFilter.value;
+  const rows=allRows.filter(r => (!cap || r.Market_Cap===cap) && (!status || r.Momentum_Status===status) && (!q || Object.values(r).some(v=>String(v).toLowerCase().includes(q))));
+  rows.sort((a,b)=>sortDirection*compare(a,b,sortKey));
+  document.querySelector('#summary').textContent=`${rows.length.toLocaleString()} of ${allRows.length.toLocaleString()} stocks`;
+  const header=`<thead><tr>${columns.map(k=>`<th><button data-key="${esc(k)}">${esc(k)} ${sortKey===k?(sortDirection===1?'↑':'↓'):''}</button></th>`).join('')}</tr></thead>`;
+  const body=rows.map(r=>`<tr>${columns.map(k=>{
+    const value=cellValue(r,k); let cls='';
+    if(k==='Market_Cap') cls='badge '+({'Large Cap':'large-cap','Mid Cap':'mid-cap','Small Cap':'small-cap','Unclassified':'unclassified'}[value]||'unclassified');
+    if(k==='Momentum_Status') cls='status';
+    return `<td>${cls?`<span class="${cls}">${esc(value)}</span>`:esc(value)}</td>`;
+  }).join('')}</tr>`).join('');
+  document.querySelector('#table').innerHTML=`<table>${header}<tbody>${body}</tbody></table>`;
+  document.querySelectorAll('th button').forEach(b=>b.addEventListener('click',()=>{
+    const key=b.dataset.key; if(sortKey===key) sortDirection*=-1; else {sortKey=key;sortDirection=1;} render();
+  }));
+}
+Promise.all([fetch('/api/data').then(r=>r.json())]).then(([data])=>{
+  if(data.error) throw new Error(data.error);
+  allRows=data.rows; columns=data.columns;
+  for(const col of columns) if(allRows.some(r=>r[col]!=='' && Number.isFinite(Number(r[col])))) numeric.add(col);
+  const statuses=[...new Set(allRows.map(r=>r.Momentum_Status).filter(Boolean))].sort();
+  statuses.forEach(s=>statusFilter.insertAdjacentHTML('beforeend',`<option>${esc(s)}</option>`));
+  document.querySelector('#source').textContent=`${data.file} · ${allRows.length.toLocaleString()} rows`;
+  document.querySelector('#note').textContent=`Market-cap categories: AMFI/SEBI classification based on six-month average market capitalization as of ${data.cap_as_of}. Stocks absent from that list show as Unclassified. Official source: AMFI categorisation of stocks.`;
+  render();
+}).catch(e=>{document.querySelector('#table').innerHTML=`<div class="error">Could not load stock data: ${esc(e.message)}</div>`;document.querySelector('#source').textContent='Dashboard data unavailable';});
+search.addEventListener('input',render); capFilter.addEventListener('change',render); statusFilter.addEventListener('change',render);
+document.querySelector('#reset').addEventListener('click',()=>{search.value='';capFilter.value='';statusFilter.value='';render();});
+</script>
+</body>
+</html>
