@@ -192,6 +192,90 @@ def load_cached_prices(connection, symbol):
     return frame.set_index("Date")
 
 
+def calculate_momentum_v2(df):
+    """Apply the attached 8-rule EMA/ATR/CCI/volume selection matrix."""
+    close = df["Close"]
+    high = df["High"]
+    low = df["Low"]
+    volume = df["Volume"]
+    latest_close = float(close.iloc[-1])
+
+    ema20 = close.ewm(span=20, adjust=False).mean()
+    ema50 = close.ewm(span=50, adjust=False).mean()
+    latest_ema20 = float(ema20.iloc[-1])
+    latest_ema50 = float(ema50.iloc[-1])
+
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    atr14 = true_range.rolling(14).mean().iloc[-1]
+    atr14_pct = float(atr14 / latest_close * 100) if pd.notna(atr14) else np.nan
+
+    typical_price = (high + low + close) / 3
+    typical_sma20 = typical_price.rolling(20).mean()
+    mean_deviation20 = typical_price.rolling(20).apply(
+        lambda values: np.mean(np.abs(values - np.mean(values))),
+        raw=True,
+    )
+    cci20 = (typical_price - typical_sma20) / (0.015 * mean_deviation20)
+    latest_cci_values = cci20.dropna().tail(20).to_numpy()
+    cci_slope = (
+        float(np.polyfit(np.arange(len(latest_cci_values)), latest_cci_values, 1)[0])
+        if len(latest_cci_values) > 1
+        else np.nan
+    )
+
+    high_52w = float(high.tail(252).max()) if len(df) >= 252 else np.nan
+    pct_below_52w_high = (
+        (high_52w - latest_close) / high_52w * 100
+        if np.isfinite(high_52w) and high_52w > 0
+        else np.nan
+    )
+
+    avg_volume20 = float(volume.tail(20).mean())
+    avg_volume2 = float(volume.tail(2).mean())
+    avg_volume5 = float(volume.tail(5).mean())
+
+    conditions = {
+        "V2_Close_Above_EMA50": (latest_close > latest_ema50, 10),
+        "V2_Close_Above_EMA20": (latest_close > latest_ema20, 10),
+        "V2_EMA20_Above_EMA50": (latest_ema20 > latest_ema50, 20),
+        "V2_Within_20Pct_Of_52W_High": (
+            np.isfinite(pct_below_52w_high)
+            and (latest_close >= high_52w or 0 <= pct_below_52w_high <= 20),
+            30,
+        ),
+        "V2_ATR14_Below_3Pct": (np.isfinite(atr14_pct) and atr14_pct < 3, 10),
+        "V2_CCI20_Rising": (np.isfinite(cci_slope) and cci_slope > 0, 10),
+        "V2_Volume_Above_20D_Avg": (float(volume.iloc[-1]) > avg_volume20, 5),
+        "V2_Avg_Volume_2D_Above_5D": (avg_volume2 > avg_volume5, 5),
+    }
+
+    result = {
+        "Momentum_V2_Score_%": int(
+            sum(weight for passed, weight in conditions.values() if passed)
+        ),
+        "V2_EMA20": round(latest_ema20, 2),
+        "V2_EMA50": round(latest_ema50, 2),
+        "V2_52W_High": round(high_52w, 2) if np.isfinite(high_52w) else None,
+        "V2_Pct_Below_52W_High": (
+            round(pct_below_52w_high, 2)
+            if np.isfinite(pct_below_52w_high)
+            else None
+        ),
+        "V2_ATR14_%": round(atr14_pct, 2) if np.isfinite(atr14_pct) else None,
+        "V2_CCI20_Slope": round(cci_slope, 2) if np.isfinite(cci_slope) else None,
+    }
+    result.update({name: bool(passed) for name, (passed, _) in conditions.items()})
+    return result
+
+
 # ==========================================
 # CALCULATE MOMENTUM INDICATORS
 # ==========================================
@@ -331,7 +415,7 @@ def analyse_stock(symbol, ticker_map, connection):
         else:
             status = "Weak / Mixed"
 
-        return {
+        result = {
             "Stock": symbol,
             "Yahoo_Ticker": ticker,
             "Date": df.index[-1].date(),
@@ -350,6 +434,8 @@ def analyse_stock(symbol, ticker_map, connection):
             "Volume_Confirmation": volume_confirmation,
             "Momentum_Status": status
         }
+        result.update(calculate_momentum_v2(df))
+        return result
 
     except Exception as e:
         print("Error:", symbol, e)
@@ -431,7 +517,12 @@ print("NSE ALL-STOCKS MOMENTUM RESULTS")
 print("================================")
 
 print(
-    final_df.head(20).to_string(index=False)
+    final_df[
+        [
+            "Rank", "Stock", "Momentum_Status", "Momentum_Score",
+            "Momentum_V2_Score_%",
+        ]
+    ].head(20).to_string(index=False)
 )
 
 print("\nTotal stocks successfully scanned:", len(final_df))
@@ -487,6 +578,7 @@ display_columns = [
     "Stock",
     "Close",
     "Momentum_Score",
+    "Momentum_V2_Score_%",
     "Return_1M_%",
     "Return_3M_%",
     "Return_6M_%",
@@ -505,6 +597,7 @@ print(
         formatters={
             "Close": "{:.2f}".format,
             "Momentum_Score": "{:+.2f}".format,
+            "Momentum_V2_Score_%": "{}%".format,
             "Return_1M_%": "{:+.2f}%".format,
             "Return_3M_%": "{:+.2f}%".format,
             "Return_6M_%": "{:+.2f}%".format,
@@ -573,7 +666,10 @@ print(f"2. {OUTPUT_EXCEL}")
 print("\nTOP 5 MOMENTUM STOCKS")
 print(
     final_df[
-        ["Rank", "Stock", "Momentum_Score", "Momentum_Status"]
+        [
+            "Rank", "Stock", "Momentum_Score", "Momentum_V2_Score_%",
+            "Momentum_Status",
+        ]
     ].head(5).to_string(index=False)
 )
 
