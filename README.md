@@ -30,13 +30,15 @@ Each scanner run also saves its V1 and V2 ranks in the `momentum_rank_history` t
 
 The scanner evaluates saved rankings after 1, 5, 20, and 60 trading sessions and stores results in `rank_forward_outcomes` and `rank_evaluation_runs`. A stock is correct when its adjusted close after the selected horizon is higher than the close used to calculate its signal; flat or lower is incorrect. The dashboard reports overall counts and provides a searchable row for every stock in each completed V2 snapshot, including rank, signal close, later close, price change, and result. A horizon remains pending until enough future prices are available.
 
-To reconstruct historical rankings from cached daily prices and backtest them, run:
+To reconstruct up to one year of historical rankings from cached daily prices and backtest them, run:
 
 ```bash
-python3 backtest_momentum_history.py --days 30
+python3 backtest_momentum_history.py --days 365
 ```
 
-This command uses the same V2 scoring function as the scanner and does not download prices. It reconstructs the historical universe from symbols in the database with at least 200 traded sessions; exact past NSE membership was not archived. Increase `--days` to rebuild a longer history; longer forward horizons need older rank dates to have enough later trading sessions.
+This command uses the scanner's V2 scoring rules and does not download prices. Before writing, it compares reconstructed current V2 scores with the saved current snapshot and stops if they differ. Historical ranks can only be created for dates with at least 200 prior traded sessions; exact past NSE membership was not archived. Increase `--days` to use a longer calendar lookback, but that cannot create ranks for dates lacking enough cached history.
+
+With the current cache (prices from October 20, 2025 through November 23, 2026), the backfill creates 70 trading-day rank snapshots from August 12 through November 23, 2026. Earlier dates are skipped because the cache does not yet contain 200 prior trading sessions for eligible stocks. Rebuilding a full year of ranks requires older daily price history before the target year, plus historical NSE listing data for the exact universe.
 
 ## Open the local dashboard
 

@@ -199,7 +199,6 @@ def load_accuracy_stocks(path: Path, horizon: int, snapshot_date: str | None = N
             "Rank": rank,
             "Stock": symbol,
             "Momentum_V2_Score_%": metrics.get("Momentum_V2_Score_%", ""),
-            "Momentum_Status": metrics.get("Momentum_Status", ""),
             "Rank_Date": rank_date,
             "Signal_Price_Date": signal_price_date,
             "Signal_Close": round(signal_close, 2),

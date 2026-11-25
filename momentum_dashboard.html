@@ -159,7 +159,7 @@ function renderAccuracyStocks(snapshotDate) {
   const correct=accuracyStockRows.filter(row=>row.Correct).length;
   const rate=accuracyStockRows.length?`${(correct/accuracyStockRows.length*100).toFixed(2)}%`:'';
   document.querySelector('#accuracy-detail-summary').textContent=`${snapshotDate}: ${correct} of ${accuracyStockRows.length} stocks went up (${rate}) · Showing ${rows.length}`;
-  const cols=['Rank','Stock','Momentum_V2_Score_%','Momentum_Status','Rank_Date','Signal_Price_Date','Signal_Close','Check_Date','Check_Close','Change_%','Result','Market_Cap'];
+  const cols=['Rank','Stock','Momentum_V2_Score_%','Rank_Date','Signal_Price_Date','Signal_Close','Check_Date','Check_Close','Change_%','Result','Market_Cap'];
   target.innerHTML=`<table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${cols.map(c=>`<td>${c==='Result'?`<span class="${row.Correct?'large-cap':'unclassified'}">${esc(row[c])}</span>`:esc(row[c])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
 }
 document.querySelector('#rank-tab').addEventListener('click',()=>{
