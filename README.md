@@ -62,7 +62,7 @@ The scanner imports market-cap categories into the database from [`amfi_market_c
 
 The static site is in [`docs/`](docs/). After each scanner run, the saved V2 rank snapshots are exported as JSON files under `docs/ranks/`; the page lets visitors select a date and search, filter, and sort ranks by sector and market cap. The SQLite database and price history are not published.
 
-To publish the page, configure GitHub Pages once under **Settings → Pages → Build and deployment**: choose **Deploy from a branch**, select branch `main`, and select folder `/docs`. To update rank data, run the scanner and push the changed `docs/` files to `main`; GitHub Pages publishes them directly from that folder without a workflow. The page URL is `https://parthadevcommunity.github.io/money_purse/`.
+To publish the page, configure GitHub Pages once under **Settings → Pages → Build and deployment → Source** and choose **GitHub Actions**. The Actions workflow uploads the static `docs/` site and deploys it. To update rank data, run the scanner and push changed `docs/` files to `main`; that push triggers deployment. The page URL is `https://parthadevcommunity.github.io/money_purse/`.
 
 If you only need to refresh the static rank files from the existing database without scanning prices again, run:
 
