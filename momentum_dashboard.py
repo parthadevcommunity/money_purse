@@ -100,12 +100,8 @@ def load_accuracy(path: Path, horizon: int) -> dict:
             summaries = connection.execute(
                 """
                 SELECT r.snapshot_date, r.ranked_count, r.evaluated_count,
-                       r.universe_median_return,
-                       COUNT(CASE WHEN o.top_decile=1 THEN 1 END) AS top_count,
                        SUM(CASE WHEN o.correct=1 THEN 1 ELSE 0 END) AS correct_count,
-                       SUM(CASE WHEN o.top_decile=1 AND o.correct=1 THEN 1 ELSE 0 END) AS top_correct_count,
-                       AVG(CASE WHEN o.top_decile=1 THEN o.return_pct END) AS top_avg_return,
-                       AVG(CASE WHEN o.top_decile=0 THEN o.return_pct END) AS rest_avg_return
+                       AVG(o.return_pct) AS avg_return
                 FROM rank_evaluation_runs r
                 LEFT JOIN rank_forward_outcomes o
                   ON o.snapshot_date=r.snapshot_date AND o.model=r.model AND o.horizon=r.horizon
@@ -127,47 +123,94 @@ def load_accuracy(path: Path, horizon: int) -> dict:
                 """,
                 (horizon,),
             ).fetchone()[0]
+            latest_pending = connection.execute(
+                """
+                SELECT MAX(h.snapshot_date)
+                FROM momentum_rank_history h
+                WHERE h.model='V2' AND NOT EXISTS (
+                    SELECT 1 FROM rank_evaluation_runs r
+                    WHERE r.snapshot_date=h.snapshot_date AND r.model=h.model AND r.horizon=?
+                )
+                """,
+                (horizon,),
+            ).fetchone()[0]
         except sqlite3.OperationalError:
-            summaries, pending = [], 0
+            summaries, pending, latest_pending = [], 0, None
 
     rows = []
-    for snapshot_date, ranked, evaluated, median, top_count, correct, top_correct, top_avg, rest_avg in summaries:
-        top_count = top_count or 0
+    for snapshot_date, ranked, evaluated, correct, avg_return in summaries:
         correct = correct or 0
-        top_correct = top_correct or 0
         rows.append({
             "Snapshot_Date": snapshot_date,
             "Ranked_Stocks": ranked,
             "Evaluated_Stocks": evaluated,
-            "Top_10_Count": top_count,
             "Correct": correct,
             "Incorrect": evaluated - correct,
             "Correct_%": round(correct / evaluated * 100, 2) if evaluated else "",
-            "Top_10_Correct": top_correct,
-            "Top_10_Incorrect": top_count - top_correct,
-            "Top_10_Correct_%": round(top_correct / top_count * 100, 2) if top_count else "",
-            "Top_10_Avg_Return_%": round(top_avg, 2) if top_avg is not None else "",
-            "Other_Stocks_Avg_Return_%": round(rest_avg, 2) if rest_avg is not None else "",
-            "Universe_Median_Return_%": round(median, 2),
+            "Average_Return_%": round(avg_return, 2) if avg_return is not None else "",
         })
     correct_total = sum(row["Correct"] for row in rows)
     incorrect_total = sum(row["Incorrect"] for row in rows)
     all_total = correct_total + incorrect_total
-    top10_correct = sum(row["Top_10_Correct"] for row in rows)
-    top10_incorrect = sum(row["Top_10_Incorrect"] for row in rows)
     return {
         "horizon": horizon,
         "rows": rows,
         "evaluated_snapshots": len(rows),
         "pending_snapshots": pending,
+        "latest_pending_snapshot": latest_pending,
         "correct": correct_total,
         "incorrect": incorrect_total,
         "correct_pct": round(correct_total / all_total * 100, 2) if all_total else None,
-        "top10_correct": top10_correct,
-        "top10_incorrect": top10_incorrect,
-        "top10_correct_pct": round(top10_correct / (top10_correct + top10_incorrect) * 100, 2)
-        if top10_correct + top10_incorrect else None,
+        "latest_completed_snapshot": rows[0]["Snapshot_Date"] if rows else None,
     }
+
+
+def load_accuracy_stocks(path: Path, horizon: int, snapshot_date: str | None = None) -> dict:
+    if horizon not in (1, 5, 20, 60):
+        raise ValueError("Horizon must be 1, 5, 20, or 60 trading sessions.")
+    if not path.is_file():
+        raise ValueError(f"Database not found: {path}")
+    with sqlite3.connect(path) as connection:
+        if not snapshot_date:
+            found = connection.execute(
+                "SELECT MAX(snapshot_date) FROM rank_evaluation_runs WHERE model='V2' AND horizon=?",
+                (horizon,),
+            ).fetchone()
+            snapshot_date = found[0] if found else None
+        if not snapshot_date:
+            return {"snapshot_date": None, "horizon": horizon, "rows": []}
+        records = connection.execute(
+            """
+            SELECT o.rank,o.symbol,o.snapshot_date,h.data_date,o.exit_date,
+                   o.entry_close,o.exit_close,o.return_pct,o.correct,h.metrics_json,c.category
+            FROM rank_forward_outcomes o
+            LEFT JOIN momentum_rank_history h
+              ON h.snapshot_date=o.snapshot_date AND h.model=o.model AND h.symbol=o.symbol
+            LEFT JOIN market_cap_categories c ON c.symbol=o.symbol
+            WHERE o.model='V2' AND o.horizon=? AND o.snapshot_date=?
+            ORDER BY o.rank,o.symbol
+            """,
+            (horizon, snapshot_date),
+        ).fetchall()
+    rows = []
+    for rank, symbol, rank_date, signal_price_date, check_date, signal_close, check_close, change, correct, metrics_json, category in records:
+        metrics = json.loads(metrics_json) if metrics_json else {}
+        rows.append({
+            "Rank": rank,
+            "Stock": symbol,
+            "Momentum_V2_Score_%": metrics.get("Momentum_V2_Score_%", ""),
+            "Momentum_Status": metrics.get("Momentum_Status", ""),
+            "Rank_Date": rank_date,
+            "Signal_Price_Date": signal_price_date,
+            "Signal_Close": round(signal_close, 2),
+            "Check_Date": check_date,
+            "Check_Close": round(check_close, 2),
+            "Change_%": round(change, 2),
+            "Correct": bool(correct),
+            "Result": "UP — Correct" if correct else "FLAT/DOWN — Incorrect",
+            "Market_Cap": category or "Unclassified",
+        })
+    return {"snapshot_date": snapshot_date, "horizon": horizon, "rows": rows}
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -182,6 +225,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 body = json.dumps(load_accuracy(self.database_path, horizon), allow_nan=False).encode()
                 status = 200
             except (OSError, ValueError, sqlite3.Error) as error:
+                body = json.dumps({"error": str(error)}).encode()
+                status = 400
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if route == "/api/accuracy/stocks":
+            try:
+                query = parse_qs(urlparse(self.path).query)
+                horizon = int(query.get("horizon", ["1"])[0])
+                snapshot_date = query.get("snapshot", [None])[0]
+                body = json.dumps(
+                    load_accuracy_stocks(self.database_path, horizon, snapshot_date),
+                    allow_nan=False,
+                ).encode()
+                status = 200
+            except (OSError, ValueError, sqlite3.Error, json.JSONDecodeError) as error:
                 body = json.dumps({"error": str(error)}).encode()
                 status = 400
             self.send_response(status)
