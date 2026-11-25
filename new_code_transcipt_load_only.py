@@ -698,243 +698,248 @@ def analyse_stock(symbol, ticker_map, connection):
 # RUN SCANNER
 # ==========================================
 
-print("\nDownloading", INDEX_NAME, "constituents...")
+def run_scanner():
+    print("\nDownloading", INDEX_NAME, "constituents...")
 
-stocks, ticker_map = get_stocks()
+    stocks, ticker_map = get_stocks()
 
-print("Total NSE symbols found:", len(stocks))
+    print("Total NSE symbols found:", len(stocks))
 
-results = []
-price_db = open_price_database()
-try:
-    for i, stock in enumerate(stocks, start=1):
-        print(f"Scanning {i}/{len(stocks)}: {stock}")
-        result = analyse_stock(stock, ticker_map, price_db)
-        if result is not None:
-            results.append(result)
-finally:
-    price_db.close()
+    results = []
+    price_db = open_price_database()
+    try:
+        for i, stock in enumerate(stocks, start=1):
+            print(f"Scanning {i}/{len(stocks)}: {stock}")
+            result = analyse_stock(stock, ticker_map, price_db)
+            if result is not None:
+                results.append(result)
+    finally:
+        price_db.close()
 
 
-# ==========================================
-# RANK MOMENTUM
-# ==========================================
+    # ==========================================
+    # RANK MOMENTUM
+    # ==========================================
 
-if not results:
-    raise ValueError(
-        "No stock data retrieved. Check internet or ticker availability."
+    if not results:
+        raise ValueError(
+            "No stock data retrieved. Check internet or ticker availability."
+        )
+
+    final_df = pd.DataFrame(results)
+
+    # Weighted relative momentum score
+    final_df["Momentum_Score"] = (
+        final_df["Return_1M_%"] * 0.20
+        + final_df["Return_3M_%"] * 0.40
+        + final_df["Return_6M_%"] * 0.40
+    ).round(2)
+
+    # Sort highest momentum first
+    final_df = final_df.sort_values(
+        "Momentum_Score",
+        ascending=False
+    ).reset_index(drop=True)
+
+    final_df.insert(
+        0,
+        "Rank",
+        range(1, len(final_df) + 1)
     )
 
-final_df = pd.DataFrame(results)
+    # ==========================================
+    # EXPORT FILES
+    # ==========================================
 
-# Weighted relative momentum score
-final_df["Momentum_Score"] = (
-    final_df["Return_1M_%"] * 0.20
-    + final_df["Return_3M_%"] * 0.40
-    + final_df["Return_6M_%"] * 0.40
-).round(2)
-
-# Sort highest momentum first
-final_df = final_df.sort_values(
-    "Momentum_Score",
-    ascending=False
-).reset_index(drop=True)
-
-final_df.insert(
-    0,
-    "Rank",
-    range(1, len(final_df) + 1)
-)
-
-# ==========================================
-# EXPORT FILES
-# ==========================================
-
-final_df.to_csv(
-    OUTPUT_CSV,
-    index=False
-)
-
-# Export a separate leaderboard sorted by the attached V2 selection matrix.
-v2_df = final_df.sort_values(
-    "Momentum_V2_Score_%",
-    ascending=False,
-    kind="stable",
-).reset_index(drop=True)
-v2_df.insert(0, "Momentum_V2_Rank", range(1, len(v2_df) + 1))
-v2_df.to_csv(OUTPUT_V2_CSV, index=False)
-save_momentum_rank_history(final_df, v2_df)
-update_rank_evaluations()
-
-final_df.to_excel(
-    OUTPUT_EXCEL,
-    index=False
-)
-
-# ==========================================
-# DISPLAY TOP STOCKS
-# ==========================================
-
-print("\n================================")
-print("NSE ALL-STOCKS MOMENTUM RESULTS")
-print("================================")
-
-print(
-    final_df[
-        [
-            "Rank", "Stock", "Momentum_Status", "Momentum_Score",
-            "Momentum_V2_Score_%",
-        ]
-    ].head(20).to_string(index=False)
-)
-
-print("\nTotal stocks successfully scanned:", len(final_df))
-
-print("\nFiles saved:")
-print(OUTPUT_CSV)
-print(OUTPUT_EXCEL)
-
-# ==========================================
-# RANK, PRETTY PRINT AND EXPORT
-# ==========================================
-
-if not results:
-    raise ValueError("No stock data retrieved.")
-
-final_df = pd.DataFrame(results)
-
-# Weighted momentum score
-final_df["Momentum_Score"] = (
-    final_df["Return_1M_%"] * 0.20
-    + final_df["Return_3M_%"] * 0.40
-    + final_df["Return_6M_%"] * 0.40
-).round(2)
-
-# Sort highest score first
-final_df = final_df.sort_values(
-    by="Momentum_Score",
-    ascending=False
-).reset_index(drop=True)
-
-# Add ranking
-final_df.insert(
-    0,
-    "Rank",
-    range(1, len(final_df) + 1)
-)
-
-# ==========================================
-# PRETTY PRINT
-# ==========================================
-
-print("\n" + "=" * 115)
-print("                NSE ALL-STOCKS MOMENTUM LEADERBOARD")
-print("=" * 115)
-
-print(f"Total stocks scanned : {len(final_df)}")
-print(f"Data date            : {final_df['Date'].max()}")
-print("=" * 115)
-
-# Display columns
-display_columns = [
-    "Rank",
-    "Stock",
-    "Close",
-    "Momentum_Score",
-    "Momentum_V2_Score_%",
-    "Return_1M_%",
-    "Return_3M_%",
-    "Return_6M_%",
-    "RSI_14",
-    "MACD",
-    "Volume_Ratio",
-    "Momentum_Status"
-]
-
-# Format output
-pretty_df = final_df[display_columns].copy()
-
-print(
-    pretty_df.head(20).to_string(
-        index=False,
-        formatters={
-            "Close": "{:.2f}".format,
-            "Momentum_Score": "{:+.2f}".format,
-            "Momentum_V2_Score_%": "{}%".format,
-            "Return_1M_%": "{:+.2f}%".format,
-            "Return_3M_%": "{:+.2f}%".format,
-            "Return_6M_%": "{:+.2f}%".format,
-            "RSI_14": "{:.2f}".format,
-            "MACD": "{:.2f}".format,
-            "Volume_Ratio": "{:.2f}x".format
-        }
-    )
-)
-
-print("\n" + "=" * 115)
-print("                  MOMENTUM CATEGORY SUMMARY")
-print("=" * 115)
-
-print(
-    final_df["Momentum_Status"]
-    .value_counts()
-    .to_string()
-)
-
-# ==========================================
-# EXPORT FULL SORTED RESULTS
-# ==========================================
-
-final_df.to_csv(
-    OUTPUT_CSV,
-    index=False
-)
-
-# Excel with formatting
-with pd.ExcelWriter(
-    OUTPUT_EXCEL,
-    engine="openpyxl"
-) as writer:
-
-    final_df.to_excel(
-        writer,
-        sheet_name="Momentum Ranking",
+    final_df.to_csv(
+        OUTPUT_CSV,
         index=False
     )
 
-    worksheet = writer.sheets["Momentum Ranking"]
+    # Export a separate leaderboard sorted by the attached V2 selection matrix.
+    v2_df = final_df.sort_values(
+        "Momentum_V2_Score_%",
+        ascending=False,
+        kind="stable",
+    ).reset_index(drop=True)
+    v2_df.insert(0, "Momentum_V2_Rank", range(1, len(v2_df) + 1))
+    v2_df.to_csv(OUTPUT_V2_CSV, index=False)
+    save_momentum_rank_history(final_df, v2_df)
+    update_rank_evaluations()
 
-    worksheet.freeze_panes = "A2"
-    worksheet.auto_filter.ref = worksheet.dimensions
+    final_df.to_excel(
+        OUTPUT_EXCEL,
+        index=False
+    )
 
-    # Auto-adjust column widths
-    for column in worksheet.columns:
+    # ==========================================
+    # DISPLAY TOP STOCKS
+    # ==========================================
 
-        max_length = max(
-            len(str(cell.value or ""))
-            for cell in column
+    print("\n================================")
+    print("NSE ALL-STOCKS MOMENTUM RESULTS")
+    print("================================")
+
+    print(
+        final_df[
+            [
+                "Rank", "Stock", "Momentum_Status", "Momentum_Score",
+                "Momentum_V2_Score_%",
+            ]
+        ].head(20).to_string(index=False)
+    )
+
+    print("\nTotal stocks successfully scanned:", len(final_df))
+
+    print("\nFiles saved:")
+    print(OUTPUT_CSV)
+    print(OUTPUT_EXCEL)
+
+    # ==========================================
+    # RANK, PRETTY PRINT AND EXPORT
+    # ==========================================
+
+    if not results:
+        raise ValueError("No stock data retrieved.")
+
+    final_df = pd.DataFrame(results)
+
+    # Weighted momentum score
+    final_df["Momentum_Score"] = (
+        final_df["Return_1M_%"] * 0.20
+        + final_df["Return_3M_%"] * 0.40
+        + final_df["Return_6M_%"] * 0.40
+    ).round(2)
+
+    # Sort highest score first
+    final_df = final_df.sort_values(
+        by="Momentum_Score",
+        ascending=False
+    ).reset_index(drop=True)
+
+    # Add ranking
+    final_df.insert(
+        0,
+        "Rank",
+        range(1, len(final_df) + 1)
+    )
+
+    # ==========================================
+    # PRETTY PRINT
+    # ==========================================
+
+    print("\n" + "=" * 115)
+    print("                NSE ALL-STOCKS MOMENTUM LEADERBOARD")
+    print("=" * 115)
+
+    print(f"Total stocks scanned : {len(final_df)}")
+    print(f"Data date            : {final_df['Date'].max()}")
+    print("=" * 115)
+
+    # Display columns
+    display_columns = [
+        "Rank",
+        "Stock",
+        "Close",
+        "Momentum_Score",
+        "Momentum_V2_Score_%",
+        "Return_1M_%",
+        "Return_3M_%",
+        "Return_6M_%",
+        "RSI_14",
+        "MACD",
+        "Volume_Ratio",
+        "Momentum_Status"
+    ]
+
+    # Format output
+    pretty_df = final_df[display_columns].copy()
+
+    print(
+        pretty_df.head(20).to_string(
+            index=False,
+            formatters={
+                "Close": "{:.2f}".format,
+                "Momentum_Score": "{:+.2f}".format,
+                "Momentum_V2_Score_%": "{}%".format,
+                "Return_1M_%": "{:+.2f}%".format,
+                "Return_3M_%": "{:+.2f}%".format,
+                "Return_6M_%": "{:+.2f}%".format,
+                "RSI_14": "{:.2f}".format,
+                "MACD": "{:.2f}".format,
+                "Volume_Ratio": "{:.2f}x".format
+            }
+        )
+    )
+
+    print("\n" + "=" * 115)
+    print("                  MOMENTUM CATEGORY SUMMARY")
+    print("=" * 115)
+
+    print(
+        final_df["Momentum_Status"]
+        .value_counts()
+        .to_string()
+    )
+
+    # ==========================================
+    # EXPORT FULL SORTED RESULTS
+    # ==========================================
+
+    final_df.to_csv(
+        OUTPUT_CSV,
+        index=False
+    )
+
+    # Excel with formatting
+    with pd.ExcelWriter(
+        OUTPUT_EXCEL,
+        engine="openpyxl"
+    ) as writer:
+
+        final_df.to_excel(
+            writer,
+            sheet_name="Momentum Ranking",
+            index=False
         )
 
-        worksheet.column_dimensions[
-            column[0].column_letter
-        ].width = min(max_length + 3, 25)
+        worksheet = writer.sheets["Momentum Ranking"]
 
-print("\n" + "=" * 115)
-print("FILES SAVED SUCCESSFULLY")
-print("=" * 115)
+        worksheet.freeze_panes = "A2"
+        worksheet.auto_filter.ref = worksheet.dimensions
 
-print(f"1. {OUTPUT_CSV}")
-print(f"2. {OUTPUT_EXCEL}")
-print(f"3. {OUTPUT_V2_CSV}")
+        # Auto-adjust column widths
+        for column in worksheet.columns:
 
-print("\nTOP 5 MOMENTUM STOCKS")
-print(
-    final_df[
-        [
-            "Rank", "Stock", "Momentum_Score", "Momentum_V2_Score_%",
-            "Momentum_Status",
-        ]
-    ].head(5).to_string(index=False)
-)
+            max_length = max(
+                len(str(cell.value or ""))
+                for cell in column
+            )
 
-print("\nSCAN COMPLETED")
+            worksheet.column_dimensions[
+                column[0].column_letter
+            ].width = min(max_length + 3, 25)
+
+    print("\n" + "=" * 115)
+    print("FILES SAVED SUCCESSFULLY")
+    print("=" * 115)
+
+    print(f"1. {OUTPUT_CSV}")
+    print(f"2. {OUTPUT_EXCEL}")
+    print(f"3. {OUTPUT_V2_CSV}")
+
+    print("\nTOP 5 MOMENTUM STOCKS")
+    print(
+        final_df[
+            [
+                "Rank", "Stock", "Momentum_Score", "Momentum_V2_Score_%",
+                "Momentum_Status",
+            ]
+        ].head(5).to_string(index=False)
+    )
+
+    print("\nSCAN COMPLETED")
+
+
+if __name__ == "__main__":
+    run_scanner()

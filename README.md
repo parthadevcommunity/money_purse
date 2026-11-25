@@ -30,6 +30,14 @@ Each scanner run also saves its V1 and V2 ranks in the `momentum_rank_history` t
 
 The scanner evaluates saved rankings after 5, 20, and 60 trading sessions and stores results in `rank_forward_outcomes` and `rank_evaluation_runs`. The dashboard's **Ranking correctness** view reports how often V2's top 10% beat the median forward return among stocks with enough price data. Outcomes use the next session's adjusted close as entry and the close at the selected horizon as exit. A horizon remains pending until enough future prices are available.
 
+To reconstruct historical rankings from cached daily prices and backtest them, run:
+
+```bash
+python3 backtest_momentum_history.py --days 30
+```
+
+This command uses the same V2 scoring function as the scanner and does not download prices. It reconstructs the historical universe from symbols in the database with at least 200 traded sessions; exact past NSE membership was not archived. Increase `--days` to rebuild a longer history; longer forward horizons need older rank dates to have enough later trading sessions.
+
 ## Open the local dashboard
 
 Start the dashboard:
