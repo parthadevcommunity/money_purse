@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import requests
 import sqlite3
+import json
 import time
 from io import StringIO
 from datetime import date, datetime, timedelta
@@ -21,6 +22,7 @@ OUTPUT_CSV = "NSE_All_Stocks_Momentum.csv"
 OUTPUT_EXCEL = "NSE_All_Stocks_Momentum.xlsx"
 OUTPUT_V2_CSV = "NSE_All_Stocks_Momentum_V2.csv"
 DATABASE_PATH = Path(__file__).with_name("nse_stock_prices.sqlite3")
+MARKET_CAP_CSV = Path(__file__).with_name("amfi_market_cap_2026-06.csv")
 INITIAL_HISTORY_DAYS = 400
 REFRESH_OVERLAP_DAYS = 7
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
@@ -82,10 +84,117 @@ def open_price_database():
             symbol TEXT PRIMARY KEY,
             last_checked_date TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS momentum_rank_history (
+            snapshot_date TEXT NOT NULL,
+            data_date TEXT NOT NULL,
+            model TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            rank INTEGER NOT NULL,
+            score REAL,
+            momentum_status TEXT,
+            close REAL,
+            metrics_json TEXT,
+            PRIMARY KEY (snapshot_date, model, symbol)
+        );
+        CREATE INDEX IF NOT EXISTS idx_momentum_rank_history_lookup
+            ON momentum_rank_history(model, snapshot_date, rank);
+        CREATE TABLE IF NOT EXISTS market_cap_categories (
+            symbol TEXT PRIMARY KEY,
+            company TEXT,
+            category TEXT NOT NULL,
+            average_market_cap REAL,
+            as_of TEXT NOT NULL
+        );
         """
     )
+    rank_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(momentum_rank_history)")
+    }
+    if "metrics_json" not in rank_columns:
+        connection.execute("ALTER TABLE momentum_rank_history ADD COLUMN metrics_json TEXT")
+    if MARKET_CAP_CSV.is_file():
+        cap_data = pd.read_csv(MARKET_CAP_CSV).fillna("")
+        connection.executemany(
+            """
+            INSERT INTO market_cap_categories
+                (symbol, company, category, average_market_cap, as_of)
+            VALUES (?, ?, ?, ?, '2026-06-30')
+            ON CONFLICT(symbol) DO UPDATE SET
+                company=excluded.company,
+                category=excluded.category,
+                average_market_cap=excluded.average_market_cap,
+                as_of=excluded.as_of
+            """,
+            [
+                (
+                    str(row["NSE Symbol"]).strip().upper(),
+                    str(row["Company"]).strip(),
+                    str(row["Category"]).strip(),
+                    float(row["Average Market Cap (Rs Cr)"])
+                    if str(row["Average Market Cap (Rs Cr)"]).strip()
+                    else None,
+                )
+                for _, row in cap_data.iterrows()
+                if str(row["NSE Symbol"]).strip() and str(row["Category"]).strip()
+            ],
+        )
     connection.commit()
     return connection
+
+
+def save_momentum_rank_history(v1_df, v2_df):
+    """Persist this run's V1 and V2 rankings for later forward-return analysis."""
+    snapshot_date = datetime.now(INDIA_TZ).date().isoformat()
+    connection = open_price_database()
+    try:
+        for model, frame, rank_column, score_column in (
+            ("V1", v1_df, "Rank", "Momentum_Score"),
+            ("V2", v2_df, "Momentum_V2_Rank", "Momentum_V2_Score_%"),
+        ):
+            rows = []
+            for _, row in frame.iterrows():
+                metrics = {
+                    column: (
+                        "" if pd.isna(value)
+                        else pd.Timestamp(value).date().isoformat() if column == "Date"
+                        else str(value)
+                    )
+                    for column, value in row.items()
+                }
+                rows.append((
+                    snapshot_date,
+                    pd.Timestamp(row["Date"]).date().isoformat(),
+                    model,
+                    str(row["Stock"]),
+                    int(row[rank_column]),
+                    float(row[score_column]),
+                    str(row.get("Momentum_Status", "")),
+                    float(row["Close"]),
+                    json.dumps(metrics, allow_nan=False),
+                ))
+            connection.executemany(
+                """
+                INSERT INTO momentum_rank_history
+                    (snapshot_date, data_date, model, symbol, rank, score,
+                     momentum_status, close, metrics_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(snapshot_date, model, symbol) DO UPDATE SET
+                    data_date = excluded.data_date,
+                    rank = excluded.rank,
+                    score = excluded.score,
+                    momentum_status = excluded.momentum_status,
+                    close = excluded.close,
+                    metrics_json = excluded.metrics_json
+                """,
+                rows,
+            )
+        connection.commit()
+        print(
+            f"Saved ranking history: {len(v1_df)} V1 and {len(v2_df)} V2 stocks "
+            f"for {snapshot_date}"
+        )
+    finally:
+        connection.close()
 
 
 def refresh_price_cache(connection, symbol, ticker):
@@ -512,6 +621,7 @@ v2_df = final_df.sort_values(
 ).reset_index(drop=True)
 v2_df.insert(0, "Momentum_V2_Rank", range(1, len(v2_df) + 1))
 v2_df.to_csv(OUTPUT_V2_CSV, index=False)
+save_momentum_rank_history(final_df, v2_df)
 
 final_df.to_excel(
     OUTPUT_EXCEL,

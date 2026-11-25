@@ -87,7 +87,7 @@ Promise.all([fetch('/api/data').then(r=>r.json())]).then(([data])=>{
   for(const col of columns) if(allRows.some(r=>r[col]!=='' && Number.isFinite(Number(r[col])))) numeric.add(col);
   const statuses=[...new Set(allRows.map(r=>r.Momentum_Status).filter(Boolean))].sort();
   statuses.forEach(s=>statusFilter.insertAdjacentHTML('beforeend',`<option>${esc(s)}</option>`));
-  document.querySelector('#source').textContent=`${data.file} · ${allRows.length.toLocaleString()} rows`;
+  document.querySelector('#source').textContent=`${data.database} · V2 snapshot dated ${data.snapshot_date} · ${allRows.length.toLocaleString()} stocks`;
   document.querySelector('#note').textContent=`Market-cap categories: AMFI/SEBI classification based on six-month average market capitalization as of ${data.cap_as_of}. Stocks absent from that list show as Unclassified. Official source: AMFI categorisation of stocks.`;
   render();
 }).catch(e=>{document.querySelector('#table').innerHTML=`<div class="error">Could not load stock data: ${esc(e.message)}</div>`;document.querySelector('#source').textContent='Dashboard data unavailable';});

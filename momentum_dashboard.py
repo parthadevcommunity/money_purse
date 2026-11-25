@@ -1,69 +1,108 @@
 #!/usr/bin/env python3
-"""Serve the local momentum CSV as a searchable, sortable web dashboard."""
+"""Serve the latest saved V2 momentum ranking from the SQLite database."""
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
+import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_CSV = ROOT / "NSE_All_Stocks_Momentum_V2.csv"
-CAP_CSV = ROOT / "amfi_market_cap_2026-06.csv"
+DATABASE = ROOT / "nse_stock_prices.sqlite3"
 HTML = ROOT / "momentum_dashboard.html"
-CAP_AS_OF = "30 June 2026"
 
 
-def load_cap_categories(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
-    with path.open(newline="", encoding="utf-8-sig") as stream:
-        return {
-            row["NSE Symbol"].strip().upper(): row["Category"].strip()
-            for row in csv.DictReader(stream)
-            if row.get("NSE Symbol", "").strip() and row.get("Category", "").strip()
+def load_rows(path: Path) -> dict:
+    if not path.is_file():
+        raise ValueError(
+            f"Database not found: {path}. Run new_code_transcipt_load_only.py first."
+        )
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        try:
+            latest = connection.execute(
+                "SELECT MAX(snapshot_date) FROM momentum_rank_history WHERE model='V2'"
+            ).fetchone()[0]
+        except sqlite3.OperationalError as error:
+            raise ValueError(
+                "Rank history is not in the database yet. Run the latest "
+                "new_code_transcipt_load_only.py first."
+            ) from error
+        if not latest:
+            raise ValueError(
+                "No V2 rankings are saved in the database yet. Run "
+                "new_code_transcipt_load_only.py to create the first snapshot."
+            )
+
+        snapshots = connection.execute(
+            """
+            SELECT symbol, rank, score, momentum_status, close, metrics_json
+            FROM momentum_rank_history
+            WHERE model='V2' AND snapshot_date=?
+            ORDER BY rank, symbol
+            """,
+            (latest,),
+        ).fetchall()
+        categories = {
+            row["symbol"]: row["category"]
+            for row in connection.execute(
+                "SELECT symbol, category FROM market_cap_categories"
+            )
+        } if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='market_cap_categories'"
+        ).fetchone() else {}
+
+    rows = []
+    for record in snapshots:
+        metrics = json.loads(record["metrics_json"]) if record["metrics_json"] else {
+            "Stock": record["symbol"],
+            "Momentum_V2_Rank": str(record["rank"]),
+            "Momentum_V2_Score_%": str(record["score"]),
+            "Momentum_Status": record["momentum_status"] or "",
+            "Close": str(record["close"]),
         }
+        metrics["Market_Cap"] = categories.get(record["symbol"], "Unclassified")
+        rows.append(metrics)
 
-
-def load_rows(path: Path, categories: dict[str, str]) -> tuple[list[str], list[dict[str, str]]]:
-    with path.open(newline="", encoding="utf-8-sig") as stream:
-        reader = csv.DictReader(stream)
-        if not reader.fieldnames:
-            raise ValueError(f"CSV has no header: {path}")
-        rows = []
-        for row in reader:
-            symbol = (row.get("Stock") or "").strip().upper()
-            row["Market_Cap"] = categories.get(symbol, "Unclassified")
-            rows.append(row)
-        return [*reader.fieldnames, "Market_Cap"], rows
+    columns = list(rows[0].keys()) if rows else []
+    if "Market_Cap" not in columns:
+        columns.append("Market_Cap")
+    cap_as_of = None
+    if path.is_file():
+        with sqlite3.connect(path) as connection:
+            has_caps = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='market_cap_categories'"
+            ).fetchone()
+            if has_caps:
+                cap_as_of = connection.execute(
+                    "SELECT MAX(as_of) FROM market_cap_categories"
+                ).fetchone()[0]
+    return {
+        "columns": columns,
+        "rows": rows,
+        "database": path.name,
+        "snapshot_date": latest,
+        "cap_as_of": cap_as_of or "unknown",
+    }
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    csv_path: Path
+    database_path: Path
 
     def do_GET(self) -> None:  # noqa: N802
         route = urlparse(self.path).path
         if route == "/api/data":
             try:
-                columns, rows = load_rows(self.csv_path, load_cap_categories(CAP_CSV))
-                body = json.dumps(
-                    {"columns": columns, "rows": rows, "file": self.csv_path.name,
-                     "cap_as_of": CAP_AS_OF},
-                    allow_nan=False,
-                ).encode()
-            except (OSError, ValueError, csv.Error) as error:
+                body = json.dumps(load_rows(self.database_path), allow_nan=False).encode()
+                status = 200
+            except (OSError, ValueError, sqlite3.Error, json.JSONDecodeError) as error:
                 body = json.dumps({"error": str(error)}).encode()
-                self.send_response(500)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            self.send_response(200)
+                status = 500
+            self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
@@ -91,16 +130,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("csv", nargs="?", type=Path, default=DEFAULT_CSV,
-                        help="CSV to display (default: NSE_All_Stocks_Momentum_V2.csv)")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
-    csv_path = args.csv.expanduser().resolve()
-    if not csv_path.is_file():
-        parser.error(f"CSV file not found: {csv_path}")
-    DashboardHandler.csv_path = csv_path
+    DashboardHandler.database_path = DATABASE
     server = ThreadingHTTPServer(("127.0.0.1", args.port), DashboardHandler)
-    print(f"Showing {csv_path}\nOpen http://127.0.0.1:{args.port} (Ctrl+C to stop)")
+    print(f"Reading latest V2 rankings from {DATABASE}\nOpen http://127.0.0.1:{args.port} (Ctrl+C to stop)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
