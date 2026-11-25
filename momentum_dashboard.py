@@ -91,8 +91,8 @@ def load_rows(path: Path) -> dict:
 
 
 def load_accuracy(path: Path, horizon: int) -> dict:
-    if horizon not in (5, 20, 60):
-        raise ValueError("Horizon must be 5, 20, or 60 trading sessions.")
+    if horizon not in (1, 5, 20, 60):
+        raise ValueError("Horizon must be 1, 5, 20, or 60 trading sessions.")
     if not path.is_file():
         raise ValueError(f"Database not found: {path}")
     with sqlite3.connect(path) as connection:
@@ -102,7 +102,8 @@ def load_accuracy(path: Path, horizon: int) -> dict:
                 SELECT r.snapshot_date, r.ranked_count, r.evaluated_count,
                        r.universe_median_return,
                        COUNT(CASE WHEN o.top_decile=1 THEN 1 END) AS top_count,
-                       SUM(CASE WHEN o.top_decile=1 AND o.correct=1 THEN 1 ELSE 0 END) AS correct_count,
+                       SUM(CASE WHEN o.correct=1 THEN 1 ELSE 0 END) AS correct_count,
+                       SUM(CASE WHEN o.top_decile=1 AND o.correct=1 THEN 1 ELSE 0 END) AS top_correct_count,
                        AVG(CASE WHEN o.top_decile=1 THEN o.return_pct END) AS top_avg_return,
                        AVG(CASE WHEN o.top_decile=0 THEN o.return_pct END) AS rest_avg_return
                 FROM rank_evaluation_runs r
@@ -130,24 +131,30 @@ def load_accuracy(path: Path, horizon: int) -> dict:
             summaries, pending = [], 0
 
     rows = []
-    for snapshot_date, ranked, evaluated, median, top_count, correct, top_avg, rest_avg in summaries:
+    for snapshot_date, ranked, evaluated, median, top_count, correct, top_correct, top_avg, rest_avg in summaries:
         top_count = top_count or 0
         correct = correct or 0
+        top_correct = top_correct or 0
         rows.append({
             "Snapshot_Date": snapshot_date,
             "Ranked_Stocks": ranked,
             "Evaluated_Stocks": evaluated,
             "Top_10_Count": top_count,
             "Correct": correct,
-            "Incorrect": top_count - correct,
-            "Correct_%": round(correct / top_count * 100, 2) if top_count else "",
+            "Incorrect": evaluated - correct,
+            "Correct_%": round(correct / evaluated * 100, 2) if evaluated else "",
+            "Top_10_Correct": top_correct,
+            "Top_10_Incorrect": top_count - top_correct,
+            "Top_10_Correct_%": round(top_correct / top_count * 100, 2) if top_count else "",
             "Top_10_Avg_Return_%": round(top_avg, 2) if top_avg is not None else "",
             "Other_Stocks_Avg_Return_%": round(rest_avg, 2) if rest_avg is not None else "",
             "Universe_Median_Return_%": round(median, 2),
         })
     correct_total = sum(row["Correct"] for row in rows)
     incorrect_total = sum(row["Incorrect"] for row in rows)
-    top_total = correct_total + incorrect_total
+    all_total = correct_total + incorrect_total
+    top10_correct = sum(row["Top_10_Correct"] for row in rows)
+    top10_incorrect = sum(row["Top_10_Incorrect"] for row in rows)
     return {
         "horizon": horizon,
         "rows": rows,
@@ -155,7 +162,11 @@ def load_accuracy(path: Path, horizon: int) -> dict:
         "pending_snapshots": pending,
         "correct": correct_total,
         "incorrect": incorrect_total,
-        "correct_pct": round(correct_total / top_total * 100, 2) if top_total else None,
+        "correct_pct": round(correct_total / all_total * 100, 2) if all_total else None,
+        "top10_correct": top10_correct,
+        "top10_incorrect": top10_incorrect,
+        "top10_correct_pct": round(top10_correct / (top10_correct + top10_incorrect) * 100, 2)
+        if top10_correct + top10_incorrect else None,
     }
 
 
@@ -167,7 +178,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if route == "/api/accuracy":
             try:
                 query = parse_qs(urlparse(self.path).query)
-                horizon = int(query.get("horizon", ["20"])[0])
+                horizon = int(query.get("horizon", ["1"])[0])
                 body = json.dumps(load_accuracy(self.database_path, horizon), allow_nan=False).encode()
                 status = 200
             except (OSError, ValueError, sqlite3.Error) as error:

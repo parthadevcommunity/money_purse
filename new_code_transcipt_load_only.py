@@ -224,8 +224,8 @@ def save_momentum_rank_history(v1_df, v2_df):
 
 
 def update_rank_evaluations():
-    """Score matured rank snapshots at 5, 20, and 60 trading-session horizons."""
-    horizons = (5, 20, 60)
+    """Check whether ranked stocks rose over 1, 5, 20, and 60 sessions."""
+    horizons = (1, 5, 20, 60)
     connection = open_price_database()
     try:
         for model in ("V1", "V2"):
@@ -249,7 +249,7 @@ def update_rank_evaluations():
                 for snapshot_date in pending_dates:
                     signals = connection.execute(
                         """
-                        SELECT data_date, symbol, rank
+                        SELECT data_date, symbol, rank, close
                         FROM momentum_rank_history
                         WHERE snapshot_date=? AND model=?
                         ORDER BY rank
@@ -258,36 +258,39 @@ def update_rank_evaluations():
                     ).fetchall()
                     if not signals:
                         continue
-                    newest_data_date = max(row[0] for row in signals)
                     market_sessions = connection.execute(
                         """
                         SELECT DISTINCT trade_date FROM daily_prices
                         WHERE trade_date > ? ORDER BY trade_date LIMIT ?
                         """,
-                        (newest_data_date, horizon + 1),
+                        (snapshot_date, horizon),
                     ).fetchall()
-                    if len(market_sessions) < horizon + 1:
+                    if len(market_sessions) < horizon:
                         continue
 
                     outcomes = []
-                    for data_date, symbol, rank in signals:
+                    for data_date, symbol, rank, stored_close in signals:
                         prices = connection.execute(
                             """
                             SELECT trade_date, close FROM daily_prices
                             WHERE symbol=? AND trade_date > ? AND close IS NOT NULL
                             ORDER BY trade_date LIMIT ?
                             """,
-                            (symbol, data_date, horizon + 1),
+                            (symbol, snapshot_date, horizon),
                         ).fetchall()
-                        if len(prices) < horizon + 1:
+                        if len(prices) < horizon:
                             continue
-                        entry_date, entry_close = prices[0]
-                        exit_date, exit_close = prices[horizon]
+                        entry_close_row = connection.execute(
+                            "SELECT close FROM daily_prices WHERE symbol=? AND trade_date=?",
+                            (symbol, data_date),
+                        ).fetchone()
+                        entry_close = entry_close_row[0] if entry_close_row else stored_close
+                        exit_date, exit_close = prices[horizon - 1]
                         if not entry_close:
                             continue
                         forward_return = (exit_close / entry_close - 1) * 100
                         outcomes.append((
-                            str(symbol), int(rank), entry_date, exit_date,
+                            str(symbol), int(rank), snapshot_date, exit_date,
                             float(entry_close), float(exit_close), float(forward_return),
                         ))
                     if not outcomes:
@@ -314,7 +317,7 @@ def update_rank_evaluations():
                                 snapshot_date, model, symbol, horizon, rank,
                                 int(rank <= top_cutoff), entry_date, exit_date,
                                 entry_close, exit_close, forward_return, median_return,
-                                int(forward_return > median_return),
+                                int(forward_return > 0),
                             )
                             for (symbol, rank, entry_date, exit_date,
                                  entry_close, exit_close, forward_return) in outcomes

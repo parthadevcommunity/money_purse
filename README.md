@@ -28,7 +28,7 @@ Price history is cached in the database. A symbol already checked on the current
 
 Each scanner run also saves its V1 and V2 ranks in the `momentum_rank_history` table in the same database. This preserves daily rank snapshots for later comparison with future prices. A fresh database gets its first snapshot the next time you run the scanner; past rankings cannot be recovered unless you have their CSV files.
 
-The scanner evaluates saved rankings after 5, 20, and 60 trading sessions and stores results in `rank_forward_outcomes` and `rank_evaluation_runs`. The dashboard's **Ranking correctness** view reports how often V2's top 10% beat the median forward return among stocks with enough price data. Outcomes use the next session's adjusted close as entry and the close at the selected horizon as exit. A horizon remains pending until enough future prices are available.
+The scanner evaluates saved rankings after 1, 5, 20, and 60 trading sessions and stores results in `rank_forward_outcomes` and `rank_evaluation_runs`. A stock is correct when its adjusted close after the selected horizon is higher than its close on the rank date; flat or lower is incorrect. The dashboard reports counts and hit rates across all ranked stocks, with a separate top-10% summary. A horizon remains pending until enough future prices are available.
 
 To reconstruct historical rankings from cached daily prices and backtest them, run:
 

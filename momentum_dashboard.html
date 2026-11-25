@@ -64,11 +64,11 @@
   </section>
   <section id="accuracy-view" hidden>
     <div class="toolbar">
-      <label for="horizon">Evaluation horizon</label>
-      <select id="horizon"><option value="5">5 trading days</option><option value="20" selected>20 trading days</option><option value="60">60 trading days</option></select>
+      <label for="horizon">Check price direction after</label>
+      <select id="horizon"><option value="1" selected>Next trading session</option><option value="5">5 trading sessions</option><option value="20">20 trading sessions</option><option value="60">60 trading sessions</option></select>
       <span id="accuracy-summary"></span>
     </div>
-    <div class="accuracy-copy">A top 10% pick counts as correct when its forward return beats the median return among stocks with enough forward price data in that snapshot. Returns start at the next trading session after the ranking and are measured using adjusted daily closes. Historical snapshots use symbols in the price database with at least 200 traded sessions; exact past NSE membership was not archived. Incomplete horizons remain pending.</div>
+    <div class="accuracy-copy">Each V2-ranked stock is treated as a prediction that its price will rise. Correct means its adjusted close after the selected horizon is higher than its close on the rank date; flat or lower is incorrect. The 1-session view checks yesterday's rank against the next session's close. Historical backfills use cached symbols with at least 200 traded sessions; exact past NSE membership was not archived. Incomplete horizons remain pending.</div>
     <section class="panel"><div class="table-wrap" id="accuracy-table"><div class="error">Choose a horizon to load its evaluation.</div></div></section>
   </section>
 </main>
@@ -120,14 +120,14 @@ async function loadAccuracy() {
     const data=await fetch(`/api/accuracy?horizon=${horizon}`,{cache:'no-store'}).then(r=>r.json());
     if(data.error) throw new Error(data.error);
     const summary=data.evaluated_snapshots
-      ? `Top 10%: ${data.correct.toLocaleString()} correct · ${data.incorrect.toLocaleString()} incorrect · ${data.correct_pct}% hit rate · ${data.evaluated_snapshots} evaluated snapshots · ${data.pending_snapshots} pending`
+      ? `All ranks: ${data.correct.toLocaleString()} up (correct) · ${data.incorrect.toLocaleString()} flat/down (incorrect) · ${data.correct_pct}% hit rate · Top 10% hit rate: ${data.top10_correct_pct}% · ${data.evaluated_snapshots} evaluated snapshots · ${data.pending_snapshots} pending`
       : `No completed evaluations yet · ${data.pending_snapshots} snapshot(s) pending`;
     document.querySelector('#accuracy-summary').textContent=summary;
     if(!data.rows.length) {
       target.innerHTML=`<div class="error">No ${horizon}-session results yet. The scanner saves daily ranks; this horizon will appear after enough future daily prices are stored.</div>`;
       return;
     }
-    const cols=['Snapshot_Date','Ranked_Stocks','Evaluated_Stocks','Top_10_Count','Correct','Incorrect','Correct_%','Top_10_Avg_Return_%','Other_Stocks_Avg_Return_%','Universe_Median_Return_%'];
+    const cols=['Snapshot_Date','Ranked_Stocks','Evaluated_Stocks','Correct','Incorrect','Correct_%','Top_10_Count','Top_10_Correct','Top_10_Incorrect','Top_10_Correct_%','Top_10_Avg_Return_%','Other_Stocks_Avg_Return_%'];
     target.innerHTML=`<table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${data.rows.map(row=>`<tr>${cols.map(c=>`<td>${esc(row[c])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
   } catch(error) { target.innerHTML=`<div class="error">Could not load ranking evaluation: ${esc(error.message)}</div>`; }
 }
