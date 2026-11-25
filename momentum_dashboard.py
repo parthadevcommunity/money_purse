@@ -101,6 +101,8 @@ def load_accuracy(path: Path, horizon: int) -> dict:
                 """
                 SELECT r.snapshot_date, r.ranked_count, r.evaluated_count,
                        SUM(CASE WHEN o.correct=1 THEN 1 ELSE 0 END) AS correct_count,
+                       SUM(CASE WHEN o.correct=0 AND o.neutral=0 THEN 1 ELSE 0 END) AS incorrect_count,
+                       SUM(CASE WHEN o.neutral=1 THEN 1 ELSE 0 END) AS neutral_count,
                        AVG(o.return_pct) AS avg_return
                 FROM rank_evaluation_runs r
                 LEFT JOIN rank_forward_outcomes o
@@ -138,20 +140,25 @@ def load_accuracy(path: Path, horizon: int) -> dict:
             summaries, pending, latest_pending = [], 0, None
 
     rows = []
-    for snapshot_date, ranked, evaluated, correct, avg_return in summaries:
+    for snapshot_date, ranked, evaluated, correct, incorrect, neutral, avg_return in summaries:
         correct = correct or 0
+        incorrect = incorrect or 0
+        neutral = neutral or 0
         rows.append({
             "Snapshot_Date": snapshot_date,
             "Ranked_Stocks": ranked,
             "Evaluated_Stocks": evaluated,
             "Correct": correct,
-            "Incorrect": evaluated - correct,
-            "Correct_%": round(correct / evaluated * 100, 2) if evaluated else "",
+            "Incorrect": incorrect,
+            "Neutral": neutral,
+            "Correct_%": round(correct / (correct + incorrect) * 100, 2)
+            if correct + incorrect else "",
             "Average_Return_%": round(avg_return, 2) if avg_return is not None else "",
         })
     correct_total = sum(row["Correct"] for row in rows)
     incorrect_total = sum(row["Incorrect"] for row in rows)
-    all_total = correct_total + incorrect_total
+    neutral_total = sum(row["Neutral"] for row in rows)
+    directional_total = correct_total + incorrect_total
     return {
         "horizon": horizon,
         "rows": rows,
@@ -160,7 +167,9 @@ def load_accuracy(path: Path, horizon: int) -> dict:
         "latest_pending_snapshot": latest_pending,
         "correct": correct_total,
         "incorrect": incorrect_total,
-        "correct_pct": round(correct_total / all_total * 100, 2) if all_total else None,
+        "neutral": neutral_total,
+        "correct_pct": round(correct_total / directional_total * 100, 2)
+        if directional_total else None,
         "latest_completed_snapshot": rows[0]["Snapshot_Date"] if rows else None,
     }
 
@@ -182,7 +191,8 @@ def load_accuracy_stocks(path: Path, horizon: int, snapshot_date: str | None = N
         records = connection.execute(
             """
             SELECT o.rank,o.symbol,o.snapshot_date,h.data_date,o.exit_date,
-                   o.entry_close,o.exit_close,o.return_pct,o.correct,h.metrics_json,c.category
+                   o.entry_close,o.exit_close,o.return_pct,o.correct,o.neutral,
+                   h.metrics_json,c.category
             FROM rank_forward_outcomes o
             LEFT JOIN momentum_rank_history h
               ON h.snapshot_date=o.snapshot_date AND h.model=o.model AND h.symbol=o.symbol
@@ -193,7 +203,7 @@ def load_accuracy_stocks(path: Path, horizon: int, snapshot_date: str | None = N
             (horizon, snapshot_date),
         ).fetchall()
     rows = []
-    for rank, symbol, rank_date, signal_price_date, check_date, signal_close, check_close, change, correct, metrics_json, category in records:
+    for rank, symbol, rank_date, signal_price_date, check_date, signal_close, check_close, change, correct, neutral, metrics_json, category in records:
         metrics = json.loads(metrics_json) if metrics_json else {}
         rows.append({
             "Rank": rank,
@@ -206,7 +216,12 @@ def load_accuracy_stocks(path: Path, horizon: int, snapshot_date: str | None = N
             "Check_Close": round(check_close, 2),
             "Change_%": round(change, 2),
             "Correct": bool(correct),
-            "Result": "UP — Correct" if correct else "FLAT/DOWN — Incorrect",
+            "Neutral": bool(neutral),
+            "Result": (
+                "UP — Correct" if correct else
+                "FLAT — Neutral" if neutral else
+                "DOWN — Incorrect"
+            ),
             "Market_Cap": category or "Unclassified",
         })
     return {"snapshot_date": snapshot_date, "horizon": horizon, "rows": rows}

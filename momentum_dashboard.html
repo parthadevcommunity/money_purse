@@ -33,6 +33,7 @@
     .mid-cap { color:#fde68a; background:#713f1266 }
     .small-cap { color:#bfdbfe; background:#1e3a8a66 }
     .unclassified { color:#cbd5e1; background:#33415588 }
+    .incorrect { color:#fecaca; background:#7f1d1d66 }
     .status { color:#a5f3fc }
     .footnote { margin:12px 2px; font-size:12px }
     .error { padding:22px; color:#fecaca }
@@ -70,7 +71,7 @@
       <select id="accuracy-snapshot"><option value="">Latest completed snapshot</option></select>
       <span id="accuracy-summary"></span>
     </div>
-    <div class="accuracy-copy">Each V2-ranked stock is treated as a prediction that its price will rise. Correct means its adjusted close after the selected horizon is higher than the close used to calculate its signal; flat or lower is incorrect. The 1-session view checks a rank against the next session's close. Historical backfills use cached symbols with at least 200 traded sessions; exact past NSE membership was not archived. Incomplete horizons remain pending.</div>
+    <div class="accuracy-copy">Each V2-ranked stock is treated as a prediction that its price will rise. Higher close is correct, lower close is incorrect, and an unchanged close is neutral. The hit rate excludes neutral outcomes. The 1-session view checks a rank against the next session's close. Historical backfills use cached symbols with at least 200 traded sessions; exact past NSE membership was not archived. Incomplete horizons remain pending.</div>
     <div class="toolbar">
       <input id="accuracy-search" type="search" placeholder="Search a stock in this snapshot…" aria-label="Search evaluated stocks">
       <span id="accuracy-detail-summary"></span>
@@ -126,7 +127,7 @@ async function loadAccuracy() {
     const data=await fetch(`/api/accuracy?horizon=${horizon}`,{cache:'no-store'}).then(r=>r.json());
     if(data.error) throw new Error(data.error);
     const summary=data.evaluated_snapshots
-      ? `All stock checks: ${data.correct.toLocaleString()} up (correct) · ${data.incorrect.toLocaleString()} flat/down (incorrect) · ${data.correct_pct}% hit rate · ${data.evaluated_snapshots} evaluated rank dates · ${data.pending_snapshots} pending${data.latest_pending_snapshot?` (latest pending: ${data.latest_pending_snapshot})`:''}`
+      ? `All stock checks: ${data.correct.toLocaleString()} up (correct) · ${data.incorrect.toLocaleString()} down (incorrect) · ${data.neutral.toLocaleString()} flat (neutral) · ${data.correct_pct}% hit rate excluding flat · ${data.evaluated_snapshots} evaluated rank dates · ${data.pending_snapshots} pending${data.latest_pending_snapshot?` (latest pending: ${data.latest_pending_snapshot})`:''}`
       : `No completed evaluations yet · ${data.pending_snapshots} snapshot(s) pending`;
     document.querySelector('#accuracy-summary').textContent=summary;
     if(!data.rows.length) {
@@ -136,7 +137,7 @@ async function loadAccuracy() {
       return;
     }
     const selector=document.querySelector('#accuracy-snapshot'), oldValue=selector.value;
-    selector.innerHTML=data.rows.map(row=>`<option value="${esc(row.Snapshot_Date)}">${esc(row.Snapshot_Date)} · ${row.Correct}/${row.Evaluated_Stocks} up</option>`).join('');
+    selector.innerHTML=data.rows.map(row=>`<option value="${esc(row.Snapshot_Date)}">${esc(row.Snapshot_Date)} · ${row.Correct} up / ${row.Incorrect} down / ${row.Neutral} flat</option>`).join('');
     selector.value=data.rows.some(row=>row.Snapshot_Date===oldValue)?oldValue:data.rows[0].Snapshot_Date;
     await loadAccuracyStocks();
   } catch(error) { target.innerHTML=`<div class="error">Could not load ranking evaluation: ${esc(error.message)}</div>`; }
@@ -157,10 +158,13 @@ function renderAccuracyStocks(snapshotDate) {
   const q=document.querySelector('#accuracy-search').value.trim().toLowerCase();
   const rows=accuracyStockRows.filter(row=>!q || row.Stock.toLowerCase().includes(q));
   const correct=accuracyStockRows.filter(row=>row.Correct).length;
-  const rate=accuracyStockRows.length?`${(correct/accuracyStockRows.length*100).toFixed(2)}%`:'';
-  document.querySelector('#accuracy-detail-summary').textContent=`${snapshotDate}: ${correct} of ${accuracyStockRows.length} stocks went up (${rate}) · Showing ${rows.length}`;
+  const incorrect=accuracyStockRows.filter(row=>!row.Correct&&!row.Neutral).length;
+  const neutral=accuracyStockRows.filter(row=>row.Neutral).length;
+  const directional=correct+incorrect;
+  const rate=directional?`${(correct/directional*100).toFixed(2)}%`:'';
+  document.querySelector('#accuracy-detail-summary').textContent=`${snapshotDate}: ${correct} up · ${incorrect} down · ${neutral} flat · ${rate} hit rate excluding flat · Showing ${rows.length}`;
   const cols=['Rank','Stock','Momentum_V2_Score_%','Rank_Date','Signal_Price_Date','Signal_Close','Check_Date','Check_Close','Change_%','Result','Market_Cap'];
-  target.innerHTML=`<table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${cols.map(c=>`<td>${c==='Result'?`<span class="${row.Correct?'large-cap':'unclassified'}">${esc(row[c])}</span>`:esc(row[c])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  target.innerHTML=`<table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${cols.map(c=>`<td>${c==='Result'?`<span class="${row.Correct?'large-cap':row.Neutral?'mid-cap':'incorrect'}">${esc(row[c])}</span>`:esc(row[c])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
 }
 document.querySelector('#rank-tab').addEventListener('click',()=>{
   document.querySelector('#rank-view').hidden=false; document.querySelector('#accuracy-view').hidden=true;

@@ -129,6 +129,7 @@ def open_price_database():
             return_pct REAL NOT NULL,
             universe_median_return REAL NOT NULL,
             correct INTEGER NOT NULL,
+            neutral INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (snapshot_date, model, symbol, horizon)
         );
         """
@@ -138,6 +139,13 @@ def open_price_database():
     }
     if "metrics_json" not in rank_columns:
         connection.execute("ALTER TABLE momentum_rank_history ADD COLUMN metrics_json TEXT")
+    outcome_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(rank_forward_outcomes)")
+    }
+    if "neutral" not in outcome_columns:
+        connection.execute(
+            "ALTER TABLE rank_forward_outcomes ADD COLUMN neutral INTEGER NOT NULL DEFAULT 0"
+        )
     if MARKET_CAP_CSV.is_file():
         cap_data = pd.read_csv(MARKET_CAP_CSV).fillna("")
         connection.executemany(
@@ -292,6 +300,7 @@ def update_rank_evaluations():
                         outcomes.append((
                             str(symbol), int(rank), snapshot_date, exit_date,
                             float(entry_close), float(exit_close), float(forward_return),
+                            int(exit_close > entry_close), int(exit_close == entry_close),
                         ))
                     if not outcomes:
                         continue
@@ -309,18 +318,18 @@ def update_rank_evaluations():
                         INSERT INTO rank_forward_outcomes
                             (snapshot_date, model, symbol, horizon, rank, top_decile,
                              entry_date, exit_date, entry_close, exit_close, return_pct,
-                             universe_median_return, correct)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             universe_median_return, correct, neutral)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         [
                             (
                                 snapshot_date, model, symbol, horizon, rank,
                                 int(rank <= top_cutoff), entry_date, exit_date,
                                 entry_close, exit_close, forward_return, median_return,
-                                int(forward_return > 0),
+                                correct, neutral,
                             )
                             for (symbol, rank, entry_date, exit_date,
-                                 entry_close, exit_close, forward_return) in outcomes
+                                 entry_close, exit_close, forward_return, correct, neutral) in outcomes
                         ],
                     )
                     connection.execute(
