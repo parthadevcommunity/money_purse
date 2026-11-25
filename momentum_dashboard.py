@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -55,6 +56,14 @@ def load_rows(path: Path) -> dict:
         } if connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='market_cap_categories'"
         ).fetchone() else {}
+        sectors = {
+            row["symbol"]: (row["sector"], row["sector_index"])
+            for row in connection.execute(
+                "SELECT symbol,sector,sector_index FROM stock_classifications"
+            )
+        } if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='stock_classifications'"
+        ).fetchone() else {}
 
     rows = []
     for record in snapshots:
@@ -66,6 +75,9 @@ def load_rows(path: Path) -> dict:
             "Close": str(record["close"]),
         }
         metrics["Market_Cap"] = categories.get(record["symbol"], "Unclassified")
+        sector, sector_index = sectors.get(record["symbol"], (None, None))
+        metrics.setdefault("Sector", sector or "Unclassified")
+        metrics.setdefault("Sector_Index", sector_index or "")
         rows.append(metrics)
 
     columns = list(rows[0].keys()) if rows else []
@@ -90,19 +102,30 @@ def load_rows(path: Path) -> dict:
     }
 
 
-def load_accuracy(path: Path, horizon: int) -> dict:
+def load_accuracy(
+    path: Path, horizon: int, date_from: str | None = None, date_to: str | None = None
+) -> dict:
     if horizon not in (1, 5, 20, 60):
         raise ValueError("Horizon must be 1, 5, 20, or 60 trading sessions.")
     if not path.is_file():
         raise ValueError(f"Database not found: {path}")
+    for label, value in (("from", date_from), ("to", date_to)):
+        if value:
+            try:
+                date.fromisoformat(value)
+            except ValueError as error:
+                raise ValueError(f"Invalid {label} date; use YYYY-MM-DD.") from error
+    if date_from and date_to and date_from > date_to:
+        raise ValueError("Start date must be on or before end date.")
     with sqlite3.connect(path) as connection:
         try:
             summaries = connection.execute(
                 """
                 SELECT r.snapshot_date, r.ranked_count, r.evaluated_count,
                        SUM(CASE WHEN o.correct=1 THEN 1 ELSE 0 END) AS correct_count,
-                       SUM(CASE WHEN o.correct=0 AND o.neutral=0 THEN 1 ELSE 0 END) AS incorrect_count,
+                       SUM(CASE WHEN o.evaluation_result='incorrect' THEN 1 ELSE 0 END) AS incorrect_count,
                        SUM(CASE WHEN o.neutral=1 THEN 1 ELSE 0 END) AS neutral_count,
+                       SUM(CASE WHEN o.evaluation_result='unavailable' THEN 1 ELSE 0 END) AS unavailable_count,
                        AVG(o.return_pct) AS avg_return
                 FROM rank_evaluation_runs r
                 LEFT JOIN rank_forward_outcomes o
@@ -140,7 +163,11 @@ def load_accuracy(path: Path, horizon: int) -> dict:
             summaries, pending, latest_pending = [], 0, None
 
     rows = []
-    for snapshot_date, ranked, evaluated, correct, incorrect, neutral, avg_return in summaries:
+    for snapshot_date, ranked, evaluated, correct, incorrect, neutral, unavailable, avg_return in summaries:
+        if date_from and snapshot_date < date_from:
+            continue
+        if date_to and snapshot_date > date_to:
+            continue
         correct = correct or 0
         incorrect = incorrect or 0
         neutral = neutral or 0
@@ -151,6 +178,7 @@ def load_accuracy(path: Path, horizon: int) -> dict:
             "Correct": correct,
             "Incorrect": incorrect,
             "Neutral": neutral,
+            "Benchmarks_Unavailable": unavailable or 0,
             "Correct_%": round(correct / (correct + incorrect) * 100, 2)
             if correct + incorrect else "",
             "Average_Return_%": round(avg_return, 2) if avg_return is not None else "",
@@ -168,63 +196,95 @@ def load_accuracy(path: Path, horizon: int) -> dict:
         "correct": correct_total,
         "incorrect": incorrect_total,
         "neutral": neutral_total,
+        "benchmarks_unavailable": sum(row["Benchmarks_Unavailable"] for row in rows),
         "correct_pct": round(correct_total / directional_total * 100, 2)
         if directional_total else None,
         "latest_completed_snapshot": rows[0]["Snapshot_Date"] if rows else None,
+        "earliest_completed_snapshot": rows[-1]["Snapshot_Date"] if rows else None,
+        "date_from": date_from,
+        "date_to": date_to,
     }
 
 
-def load_accuracy_stocks(path: Path, horizon: int, snapshot_date: str | None = None) -> dict:
+def load_accuracy_stocks(
+    path: Path, horizon: int, snapshot_date: str | None = None,
+    date_from: str | None = None, date_to: str | None = None,
+) -> dict:
     if horizon not in (1, 5, 20, 60):
         raise ValueError("Horizon must be 1, 5, 20, or 60 trading sessions.")
     if not path.is_file():
         raise ValueError(f"Database not found: {path}")
     with sqlite3.connect(path) as connection:
-        if not snapshot_date:
+        if snapshot_date:
+            date_from = snapshot_date
+            date_to = snapshot_date
+        if not date_from and not date_to:
             found = connection.execute(
                 "SELECT MAX(snapshot_date) FROM rank_evaluation_runs WHERE model='V2' AND horizon=?",
                 (horizon,),
             ).fetchone()
-            snapshot_date = found[0] if found else None
-        if not snapshot_date:
+            date_from = date_to = found[0] if found else None
+        if not date_from and not date_to:
             return {"snapshot_date": None, "horizon": horizon, "rows": []}
+        clauses = ["o.model='V2'", "o.horizon=?"]
+        params: list = [horizon]
+        if date_from:
+            clauses.append("o.snapshot_date>=?")
+            params.append(date_from)
+        if date_to:
+            clauses.append("o.snapshot_date<=?")
+            params.append(date_to)
         records = connection.execute(
-            """
+            f"""
             SELECT o.rank,o.symbol,o.snapshot_date,h.data_date,o.exit_date,
                    o.entry_close,o.exit_close,o.return_pct,o.correct,o.neutral,
-                   h.metrics_json,c.category
+                   o.evaluation_result,o.sector_index,o.sector_return_pct,
+                   o.market_cap_index,o.market_cap_return_pct,
+                   h.metrics_json,c.category,sc.sector
             FROM rank_forward_outcomes o
             LEFT JOIN momentum_rank_history h
               ON h.snapshot_date=o.snapshot_date AND h.model=o.model AND h.symbol=o.symbol
             LEFT JOIN market_cap_categories c ON c.symbol=o.symbol
-            WHERE o.model='V2' AND o.horizon=? AND o.snapshot_date=?
-            ORDER BY o.rank,o.symbol
+            LEFT JOIN stock_classifications sc ON sc.symbol=o.symbol
+            WHERE {' AND '.join(clauses)}
+            ORDER BY o.symbol,o.snapshot_date,o.rank
             """,
-            (horizon, snapshot_date),
+            params,
         ).fetchall()
-    rows = []
-    for rank, symbol, rank_date, signal_price_date, check_date, signal_close, check_close, change, correct, neutral, metrics_json, category in records:
+
+    aggregate: dict[str, dict] = {}
+    for rank, symbol, rank_date, signal_price_date, check_date, signal_close, check_close, change, correct, neutral, result, sector_index, sector_return, cap_index, cap_return, metrics_json, category, stored_sector in records:
         metrics = json.loads(metrics_json) if metrics_json else {}
-        rows.append({
-            "Rank": rank,
+        row = aggregate.setdefault(symbol, {
             "Stock": symbol,
-            "Momentum_V2_Score_%": metrics.get("Momentum_V2_Score_%", ""),
-            "Rank_Date": rank_date,
-            "Signal_Price_Date": signal_price_date,
-            "Signal_Close": round(signal_close, 2),
-            "Check_Date": check_date,
-            "Check_Close": round(check_close, 2),
-            "Change_%": round(change, 2),
-            "Correct": bool(correct),
-            "Neutral": bool(neutral),
-            "Result": (
-                "UP — Correct" if correct else
-                "FLAT — Neutral" if neutral else
-                "DOWN — Incorrect"
-            ),
+            "Sector": stored_sector or metrics.get("Sector", "Unclassified"),
             "Market_Cap": category or "Unclassified",
+            "Evaluations": 0,
+            "Correct": 0,
+            "Incorrect": 0,
+            "Neutral": 0,
+            "Unavailable": 0,
+            "_returns": [],
         })
-    return {"snapshot_date": snapshot_date, "horizon": horizon, "rows": rows}
+        row["Evaluations"] += 1
+        key = {"correct": "Correct", "incorrect": "Incorrect", "neutral": "Neutral", "unavailable": "Unavailable"}.get(result, "Unavailable")
+        row[key] += 1
+        row["_returns"].append(change)
+    rows = []
+    for row in aggregate.values():
+        directional = row["Correct"] + row["Incorrect"]
+        returns = row.pop("_returns")
+        row["Correct_%"] = round(row["Correct"] / directional * 100, 2) if directional else ""
+        row["Average_Return_%"] = round(sum(returns) / len(returns), 2) if returns else ""
+        rows.append(row)
+    rows.sort(key=lambda row: (-row["Correct"], row["Stock"]))
+    return {
+        "snapshot_date": snapshot_date,
+        "date_from": date_from,
+        "date_to": date_to,
+        "horizon": horizon,
+        "rows": rows,
+    }
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -236,7 +296,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 query = parse_qs(urlparse(self.path).query)
                 horizon = int(query.get("horizon", ["1"])[0])
-                body = json.dumps(load_accuracy(self.database_path, horizon), allow_nan=False).encode()
+                date_from = query.get("from", [None])[0]
+                date_to = query.get("to", [None])[0]
+                body = json.dumps(
+                    load_accuracy(self.database_path, horizon, date_from, date_to),
+                    allow_nan=False,
+                ).encode()
                 status = 200
             except (OSError, ValueError, sqlite3.Error) as error:
                 body = json.dumps({"error": str(error)}).encode()
@@ -254,8 +319,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 query = parse_qs(urlparse(self.path).query)
                 horizon = int(query.get("horizon", ["1"])[0])
                 snapshot_date = query.get("snapshot", [None])[0]
+                date_from = query.get("from", [None])[0]
+                date_to = query.get("to", [None])[0]
                 body = json.dumps(
-                    load_accuracy_stocks(self.database_path, horizon, snapshot_date),
+                    load_accuracy_stocks(
+                        self.database_path, horizon, snapshot_date, date_from, date_to
+                    ),
                     allow_nan=False,
                 ).encode()
                 status = 200

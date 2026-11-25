@@ -28,7 +28,11 @@ Price history is cached in the database. A symbol already checked on the current
 
 Each scanner run also saves its V1 and V2 ranks in the `momentum_rank_history` table in the same database. This preserves daily rank snapshots for later comparison with future prices. A fresh database gets its first snapshot the next time you run the scanner; past rankings cannot be recovered unless you have their CSV files.
 
-The scanner evaluates saved rankings after 1, 5, 20, and 60 trading sessions and stores results in `rank_forward_outcomes` and `rank_evaluation_runs`. A stock is correct when its adjusted close after the selected horizon is higher than the close used to calculate its signal; lower is incorrect and unchanged is neutral. Hit rate excludes neutral outcomes. The dashboard reports counts and provides a searchable row for every stock in each completed V2 snapshot, including rank, signal close, later close, price change, and result. A horizon remains pending until enough future prices are available.
+The scanner saves a `Sector` column for each stock, based on Yahoo Finance company classification, and caches sector classifications in `stock_classifications`. It also saves daily benchmark closes in `index_daily_prices` for comparison with each stock. Large-cap stocks use Nifty 100, mid-cap stocks use Nifty Midcap 150, and small-cap stocks use an ETF tracking Nifty Smallcap 250 (the direct index history is not consistently available from Yahoo Finance). Sector classifications are mapped to corresponding Yahoo Finance NSE sector-index tickers; this is a broad mapping and can be missing for some stocks.
+
+The scanner evaluates saved rankings after 1, 5, 20, and 60 trading sessions and stores results in `rank_forward_outcomes` and `rank_evaluation_runs`. For V2 scores of 75 or higher, a rise is correct, a fall is incorrect, and a flat return is neutral. Below 75, a stock is correct only if its return is lower than both its mapped sector index and market-cap index; a flat stock return is neutral. If required benchmark prices or mappings are unavailable, the result is marked unavailable and excluded from the hit rate. The dashboard's correctness view can filter rank dates by a start/end range and filter or search results by sector; it summarizes correct, incorrect, neutral, and unavailable outcomes for each stock over that range. A horizon remains pending until enough future prices are available.
+
+Sector and benchmark data refresh when the scanner runs. Yahoo Finance ticker coverage can be incomplete. Sector membership and AMFI market-cap classification are not archived by effective date, so historical evaluations apply the currently stored classification to old snapshots. Existing V2 evaluation rows are rebuilt once after this rule update.
 
 To reconstruct up to one year of historical rankings from cached daily prices and backtest them, run:
 
@@ -53,6 +57,20 @@ Open [http://127.0.0.1:8765](http://127.0.0.1:8765) in a browser. The dashboard 
 The table supports searching, filtering by momentum status and market-cap category, and sorting by any column. The dashboard always shows the latest V2 snapshot; it has no CSV input option.
 
 The scanner imports market-cap categories into the database from [`amfi_market_cap_2026-06.csv`](amfi_market_cap_2026-06.csv). Categories come from AMFI's six-month average market capitalization list dated June 30, 2026. Symbols without a match are shown as `Unclassified`. See [AMFI's stock categorisation page](https://www.amfiindia.com/otherdata/categorisation-of-stocks) for the source list. The included classification file is a dated snapshot and does not update automatically.
+
+## Publish rank snapshots with GitHub Pages
+
+The static site is in [`docs/`](docs/). After each scanner run, the saved V2 rank snapshots are exported as JSON files under `docs/ranks/`; the page lets visitors select a date and search, filter, and sort ranks by sector and market cap. The SQLite database and price history are not published.
+
+To publish or update the page, run the scanner and push the changed `docs/` files to the `main` branch. GitHub Actions deploys the site. In the repository, set **Settings → Pages → Build and deployment → Source** to **GitHub Actions** if it is not already selected. The page URL is `https://parthadevcommunity.github.io/money_purse/`.
+
+If you only need to refresh the static rank files from the existing database without scanning prices again, run:
+
+```bash
+python3 publish_rank_history.py
+```
+
+Commit and push the resulting `docs/` changes for them to appear on the public site.
 
 ## Other files
 

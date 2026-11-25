@@ -67,13 +67,16 @@
     <div class="toolbar">
       <label for="horizon">Check price direction after</label>
       <select id="horizon"><option value="1" selected>Next trading session</option><option value="5">5 trading sessions</option><option value="20">20 trading sessions</option><option value="60">60 trading sessions</option></select>
-      <label for="accuracy-snapshot">Rank date</label>
-      <select id="accuracy-snapshot"><option value="">Latest completed snapshot</option></select>
+      <label for="accuracy-from">Rank dates from</label>
+      <input id="accuracy-from" type="date" aria-label="Start rank date">
+      <label for="accuracy-to">to</label>
+      <input id="accuracy-to" type="date" aria-label="End rank date">
       <span id="accuracy-summary"></span>
     </div>
-    <div class="accuracy-copy">Each V2-ranked stock is treated as a prediction that its price will rise. Higher close is correct, lower close is incorrect, and an unchanged close is neutral. The hit rate excludes neutral outcomes. The 1-session view checks a rank against the next session's close. Historical backfills use cached symbols with at least 200 traded sessions; exact past NSE membership was not archived. Incomplete horizons remain pending.</div>
+    <div class="accuracy-copy">V2 scores of 75 or higher are correct when the stock rises (flat is neutral). Below 75, a stock is correct only when it underperforms both its mapped sector index and market-cap index; flat is neutral. Missing benchmark prices or mappings are shown as unavailable and excluded from the hit rate.</div>
     <div class="toolbar">
-      <input id="accuracy-search" type="search" placeholder="Search a stock in this snapshot…" aria-label="Search evaluated stocks">
+      <select id="accuracy-sector"><option value="">All sectors</option></select>
+      <input id="accuracy-search" type="search" placeholder="Search stock or sector…" aria-label="Search stocks or sectors">
       <span id="accuracy-detail-summary"></span>
     </div>
     <section class="panel"><div class="table-wrap" id="accuracy-table"><div class="error">Choose a horizon to load its evaluation.</div></div></section>
@@ -124,47 +127,60 @@ async function loadAccuracy() {
   const horizon=document.querySelector('#horizon').value, target=document.querySelector('#accuracy-table');
   target.innerHTML='<div class="error">Loading evaluation…</div>';
   try {
-    const data=await fetch(`/api/accuracy?horizon=${horizon}`,{cache:'no-store'}).then(r=>r.json());
+    const dateFrom=document.querySelector('#accuracy-from').value, dateTo=document.querySelector('#accuracy-to').value;
+    const query=new URLSearchParams({horizon});
+    if(dateFrom) query.set('from',dateFrom);
+    if(dateTo) query.set('to',dateTo);
+    const data=await fetch(`/api/accuracy?${query}`,{cache:'no-store'}).then(r=>r.json());
     if(data.error) throw new Error(data.error);
     const summary=data.evaluated_snapshots
-      ? `All stock checks: ${data.correct.toLocaleString()} up (correct) · ${data.incorrect.toLocaleString()} down (incorrect) · ${data.neutral.toLocaleString()} flat (neutral) · ${data.correct_pct}% hit rate excluding flat · ${data.evaluated_snapshots} evaluated rank dates · ${data.pending_snapshots} pending${data.latest_pending_snapshot?` (latest pending: ${data.latest_pending_snapshot})`:''}`
-      : `No completed evaluations yet · ${data.pending_snapshots} snapshot(s) pending`;
+      ? `${data.rows.at(-1).Snapshot_Date} to ${data.rows[0].Snapshot_Date}: ${data.correct.toLocaleString()} correct · ${data.incorrect.toLocaleString()} incorrect · ${data.neutral.toLocaleString()} neutral · ${data.benchmarks_unavailable.toLocaleString()} unavailable · ${data.correct_pct}% hit rate · ${data.evaluated_snapshots} rank dates · ${data.pending_snapshots} pending`
+      : `No completed evaluations in this date range · ${data.pending_snapshots} snapshot(s) pending`;
     document.querySelector('#accuracy-summary').textContent=summary;
     if(!data.rows.length) {
-      document.querySelector('#accuracy-snapshot').innerHTML='<option value="">Latest completed snapshot</option>';
       document.querySelector('#accuracy-detail-summary').textContent='';
       target.innerHTML=`<div class="error">No ${horizon}-session results yet. The scanner saves daily ranks; this horizon will appear after enough future daily prices are stored.</div>`;
       return;
     }
-    const selector=document.querySelector('#accuracy-snapshot'), oldValue=selector.value;
-    selector.innerHTML=data.rows.map(row=>`<option value="${esc(row.Snapshot_Date)}">${esc(row.Snapshot_Date)} · ${row.Correct} up / ${row.Incorrect} down / ${row.Neutral} flat</option>`).join('');
-    selector.value=data.rows.some(row=>row.Snapshot_Date===oldValue)?oldValue:data.rows[0].Snapshot_Date;
-    await loadAccuracyStocks();
+    const fromInput=document.querySelector('#accuracy-from'), toInput=document.querySelector('#accuracy-to');
+    fromInput.min=data.rows.at(-1).Snapshot_Date; fromInput.max=data.rows[0].Snapshot_Date;
+    toInput.min=data.rows.at(-1).Snapshot_Date; toInput.max=data.rows[0].Snapshot_Date;
+    if(!fromInput.value) fromInput.value=data.rows.at(-1).Snapshot_Date;
+    if(!toInput.value) toInput.value=data.rows[0].Snapshot_Date;
+    await loadAccuracyStocks(data.rows.at(-1).Snapshot_Date,data.rows[0].Snapshot_Date);
   } catch(error) { target.innerHTML=`<div class="error">Could not load ranking evaluation: ${esc(error.message)}</div>`; }
 }
-async function loadAccuracyStocks() {
-  const horizon=document.querySelector('#horizon').value, snapshot=document.querySelector('#accuracy-snapshot').value;
-  const target=document.querySelector('#accuracy-table'), query=new URLSearchParams({horizon,snapshot});
+async function loadAccuracyStocks(defaultFrom='',defaultTo='') {
+  const horizon=document.querySelector('#horizon').value;
+  const dateFrom=document.querySelector('#accuracy-from').value||defaultFrom;
+  const dateTo=document.querySelector('#accuracy-to').value||defaultTo;
+  const target=document.querySelector('#accuracy-table'), query=new URLSearchParams({horizon,from:dateFrom,to:dateTo});
   target.innerHTML='<div class="error">Loading stock outcomes…</div>';
   try {
     const data=await fetch(`/api/accuracy/stocks?${query}`,{cache:'no-store'}).then(r=>r.json());
     if(data.error) throw new Error(data.error);
     accuracyStockRows=data.rows;
-    renderAccuracyStocks(data.snapshot_date);
+    const sectorSelect=document.querySelector('#accuracy-sector'), oldSector=sectorSelect.value;
+    const sectors=[...new Set(accuracyStockRows.map(row=>row.Sector).filter(Boolean))].sort();
+    sectorSelect.innerHTML='<option value="">All sectors</option>'+sectors.map(sector=>`<option value="${esc(sector)}">${esc(sector)}</option>`).join('');
+    sectorSelect.value=sectors.includes(oldSector)?oldSector:'';
+    renderAccuracyStocks(dateFrom,dateTo);
   } catch(error) { target.innerHTML=`<div class="error">Could not load stock outcomes: ${esc(error.message)}</div>`; }
 }
-function renderAccuracyStocks(snapshotDate) {
+function renderAccuracyStocks(dateFrom='',dateTo='') {
   const target=document.querySelector('#accuracy-table');
   const q=document.querySelector('#accuracy-search').value.trim().toLowerCase();
-  const rows=accuracyStockRows.filter(row=>!q || row.Stock.toLowerCase().includes(q));
-  const correct=accuracyStockRows.filter(row=>row.Correct).length;
-  const incorrect=accuracyStockRows.filter(row=>!row.Correct&&!row.Neutral).length;
-  const neutral=accuracyStockRows.filter(row=>row.Neutral).length;
+  const sector=document.querySelector('#accuracy-sector').value;
+  const rows=accuracyStockRows.filter(row=>(!sector||row.Sector===sector)&&(!q||row.Stock.toLowerCase().includes(q)||row.Sector.toLowerCase().includes(q)));
+  const correct=rows.reduce((sum,row)=>sum+row.Correct,0);
+  const incorrect=rows.reduce((sum,row)=>sum+row.Incorrect,0);
+  const neutral=rows.reduce((sum,row)=>sum+row.Neutral,0);
+  const unavailable=rows.reduce((sum,row)=>sum+row.Unavailable,0);
   const directional=correct+incorrect;
   const rate=directional?`${(correct/directional*100).toFixed(2)}%`:'';
-  document.querySelector('#accuracy-detail-summary').textContent=`${snapshotDate}: ${correct} up · ${incorrect} down · ${neutral} flat · ${rate} hit rate excluding flat · Showing ${rows.length}`;
-  const cols=['Rank','Stock','Momentum_V2_Score_%','Rank_Date','Signal_Price_Date','Signal_Close','Check_Date','Check_Close','Change_%','Result','Market_Cap'];
-  target.innerHTML=`<table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${cols.map(c=>`<td>${c==='Result'?`<span class="${row.Correct?'large-cap':row.Neutral?'mid-cap':'incorrect'}">${esc(row[c])}</span>`:esc(row[c])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  document.querySelector('#accuracy-detail-summary').textContent=`${dateFrom} to ${dateTo}: ${correct} correct · ${incorrect} incorrect · ${neutral} neutral · ${unavailable} unavailable · ${rate} hit rate · ${rows.length} stocks`;
+  const cols=['Stock','Sector','Market_Cap','Evaluations','Correct','Incorrect','Neutral','Unavailable','Correct_%','Average_Return_%'];
+  target.innerHTML=`<table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${cols.map(c=>`<td>${esc(row[c])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
 }
 document.querySelector('#rank-tab').addEventListener('click',()=>{
   document.querySelector('#rank-view').hidden=false; document.querySelector('#accuracy-view').hidden=true;
@@ -176,8 +192,10 @@ document.querySelector('#accuracy-tab').addEventListener('click',()=>{
   loadAccuracy();
 });
 document.querySelector('#horizon').addEventListener('change',loadAccuracy);
-document.querySelector('#accuracy-snapshot').addEventListener('change',loadAccuracyStocks);
-document.querySelector('#accuracy-search').addEventListener('input',()=>renderAccuracyStocks(document.querySelector('#accuracy-snapshot').value));
+document.querySelector('#accuracy-from').addEventListener('change',loadAccuracy);
+document.querySelector('#accuracy-to').addEventListener('change',loadAccuracy);
+document.querySelector('#accuracy-sector').addEventListener('change',()=>renderAccuracyStocks(document.querySelector('#accuracy-from').value,document.querySelector('#accuracy-to').value));
+document.querySelector('#accuracy-search').addEventListener('input',()=>renderAccuracyStocks(document.querySelector('#accuracy-from').value,document.querySelector('#accuracy-to').value));
 </script>
 </body>
 </html>

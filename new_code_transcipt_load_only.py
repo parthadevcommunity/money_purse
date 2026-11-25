@@ -27,6 +27,29 @@ INITIAL_HISTORY_DAYS = 400
 REFRESH_OVERLAP_DAYS = 7
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
 
+# Yahoo Finance symbols for the NSE broad and sector benchmarks. The small-cap
+# benchmark is an ETF tracking Nifty Smallcap 250 because Yahoo does not expose
+# a consistent direct history ticker for that index.
+CAP_INDEX_TICKERS = {
+    "Large Cap": "^CNX100",
+    "Mid Cap": "NIFTYMIDCAP150.NS",
+    "Small Cap": "HDFCSML250.NS",
+}
+SECTOR_INDEX_TICKERS = {
+    "Technology": "^CNXIT",
+    "Financial Services": "^CNXFINANCE",
+    "Healthcare": "^CNXPHARMA",
+    "Consumer Defensive": "^CNXFMCG",
+    "Consumer Cyclical": "^CNXAUTO",
+    "Industrials": "^CNXCG",
+    "Basic Materials": "^CNXMETAL",
+    "Energy": "^CNXENERGY",
+    "Utilities": "^CNXENERGY",
+    "Communication Services": "^CNXMEDIA",
+    "Real Estate": "^CNXREALTY",
+}
+INDEX_TICKERS = sorted(set(CAP_INDEX_TICKERS.values()) | set(SECTOR_INDEX_TICKERS.values()))
+
 # ==========================================
 # GET CURRENT NSE STOCK UNIVERSE
 # ==========================================
@@ -105,6 +128,19 @@ def open_price_database():
             average_market_cap REAL,
             as_of TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS stock_classifications (
+            symbol TEXT PRIMARY KEY,
+            sector TEXT,
+            sector_index TEXT,
+            classification_source TEXT NOT NULL DEFAULT 'Yahoo Finance',
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS index_daily_prices (
+            index_ticker TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            close REAL NOT NULL,
+            PRIMARY KEY (index_ticker, trade_date)
+        );
         CREATE TABLE IF NOT EXISTS rank_evaluation_runs (
             snapshot_date TEXT NOT NULL,
             model TEXT NOT NULL,
@@ -130,8 +166,14 @@ def open_price_database():
             universe_median_return REAL NOT NULL,
             correct INTEGER NOT NULL,
             neutral INTEGER NOT NULL DEFAULT 0,
+            evaluation_result TEXT NOT NULL DEFAULT 'incorrect',
+            sector_index TEXT,
+            sector_return_pct REAL,
+            market_cap_index TEXT,
+            market_cap_return_pct REAL,
             PRIMARY KEY (snapshot_date, model, symbol, horizon)
         );
+        CREATE TABLE IF NOT EXISTS app_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """
     )
     rank_columns = {
@@ -142,9 +184,33 @@ def open_price_database():
     outcome_columns = {
         row[1] for row in connection.execute("PRAGMA table_info(rank_forward_outcomes)")
     }
+    had_evaluation_result = "evaluation_result" in outcome_columns
     if "neutral" not in outcome_columns:
         connection.execute(
             "ALTER TABLE rank_forward_outcomes ADD COLUMN neutral INTEGER NOT NULL DEFAULT 0"
+        )
+    for name, sql_type in (
+        ("evaluation_result", "TEXT NOT NULL DEFAULT 'incorrect'"),
+        ("sector_index", "TEXT"),
+        ("sector_return_pct", "REAL"),
+        ("market_cap_index", "TEXT"),
+        ("market_cap_return_pct", "REAL"),
+    ):
+        if name not in outcome_columns:
+            connection.execute(f"ALTER TABLE rank_forward_outcomes ADD COLUMN {name} {sql_type}")
+    if not had_evaluation_result:
+        connection.execute(
+            "UPDATE rank_forward_outcomes SET evaluation_result=CASE "
+            "WHEN correct=1 THEN 'correct' WHEN neutral=1 THEN 'neutral' ELSE 'incorrect' END"
+        )
+    evaluator_version = connection.execute(
+        "SELECT value FROM app_metadata WHERE key='v2_evaluator_version'"
+    ).fetchone()
+    if not evaluator_version or evaluator_version[0] != "2":
+        connection.execute("DELETE FROM rank_forward_outcomes WHERE model='V2'")
+        connection.execute("DELETE FROM rank_evaluation_runs WHERE model='V2'")
+        connection.execute(
+            "INSERT OR REPLACE INTO app_metadata(key,value) VALUES('v2_evaluator_version','2')"
         )
     if MARKET_CAP_CSV.is_file():
         cap_data = pd.read_csv(MARKET_CAP_CSV).fillna("")
@@ -236,6 +302,7 @@ def update_rank_evaluations():
     horizons = (1, 5, 20, 60)
     connection = open_price_database()
     try:
+        refresh_index_price_cache(connection)
         for model in ("V1", "V2"):
             for horizon in horizons:
                 pending_dates = [
@@ -257,7 +324,7 @@ def update_rank_evaluations():
                 for snapshot_date in pending_dates:
                     signals = connection.execute(
                         """
-                        SELECT data_date, symbol, rank, close
+                        SELECT data_date, symbol, rank, close, score, metrics_json
                         FROM momentum_rank_history
                         WHERE snapshot_date=? AND model=?
                         ORDER BY rank
@@ -277,7 +344,7 @@ def update_rank_evaluations():
                         continue
 
                     outcomes = []
-                    for data_date, symbol, rank, stored_close in signals:
+                    for data_date, symbol, rank, stored_close, score, metrics_json in signals:
                         prices = connection.execute(
                             """
                             SELECT trade_date, close FROM daily_prices
@@ -297,10 +364,51 @@ def update_rank_evaluations():
                         if not entry_close:
                             continue
                         forward_return = (exit_close / entry_close - 1) * 100
+                        sector_index = None
+                        sector_return = None
+                        cap_index = None
+                        cap_return = None
+                        result = "incorrect" if exit_close < entry_close else "correct"
+                        if exit_close == entry_close:
+                            result = "neutral"
+                        if model == "V2":
+                            metrics = json.loads(metrics_json or "{}")
+                            sector_index = metrics.get("Sector_Index") or None
+                            if not sector_index:
+                                classified = connection.execute(
+                                    "SELECT sector_index FROM stock_classifications WHERE symbol=?",
+                                    (symbol,),
+                                ).fetchone()
+                                sector_index = classified[0] if classified else None
+                            category_row = connection.execute(
+                                "SELECT category FROM market_cap_categories WHERE symbol=?", (symbol,)
+                            ).fetchone()
+                            category = category_row[0] if category_row else None
+                            cap_index = CAP_INDEX_TICKERS.get(category)
+                            if float(score or 0) >= 75:
+                                result = "correct" if forward_return > 0 else "incorrect"
+                                if forward_return == 0:
+                                    result = "neutral"
+                            elif forward_return == 0:
+                                result = "neutral"
+                            else:
+                                sector_return = get_index_return(
+                                    connection, sector_index, data_date, exit_date
+                                ) if sector_index else None
+                                cap_return = get_index_return(
+                                    connection, cap_index, data_date, exit_date
+                                ) if cap_index else None
+                                if sector_return is None or cap_return is None:
+                                    result = "unavailable"
+                                elif forward_return < sector_return and forward_return < cap_return:
+                                    result = "correct"
+                                else:
+                                    result = "incorrect"
                         outcomes.append((
                             str(symbol), int(rank), snapshot_date, exit_date,
                             float(entry_close), float(exit_close), float(forward_return),
-                            int(exit_close > entry_close), int(exit_close == entry_close),
+                            int(result == "correct"), int(result == "neutral"), result,
+                            sector_index, sector_return, cap_index, cap_return,
                         ))
                     if not outcomes:
                         continue
@@ -318,18 +426,21 @@ def update_rank_evaluations():
                         INSERT INTO rank_forward_outcomes
                             (snapshot_date, model, symbol, horizon, rank, top_decile,
                              entry_date, exit_date, entry_close, exit_close, return_pct,
-                             universe_median_return, correct, neutral)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             universe_median_return, correct, neutral, evaluation_result,
+                             sector_index,sector_return_pct,market_cap_index,market_cap_return_pct)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         [
                             (
                                 snapshot_date, model, symbol, horizon, rank,
                                 int(rank <= top_cutoff), entry_date, exit_date,
                                 entry_close, exit_close, forward_return, median_return,
-                                correct, neutral,
+                                correct, neutral, result, sector_index, sector_return,
+                                cap_index, cap_return,
                             )
                             for (symbol, rank, entry_date, exit_date,
-                                 entry_close, exit_close, forward_return, correct, neutral) in outcomes
+                                 entry_close, exit_close, forward_return, correct, neutral, result,
+                                 sector_index, sector_return, cap_index, cap_return) in outcomes
                         ],
                     )
                     connection.execute(
@@ -349,6 +460,76 @@ def update_rank_evaluations():
                     )
     finally:
         connection.close()
+
+
+def get_index_return(connection, ticker, entry_date, exit_date):
+    if not ticker:
+        return None
+    entry = connection.execute(
+        "SELECT close FROM index_daily_prices WHERE index_ticker=? AND trade_date<=? ORDER BY trade_date DESC LIMIT 1",
+        (ticker, entry_date),
+    ).fetchone()
+    exit_row = connection.execute(
+        "SELECT close FROM index_daily_prices WHERE index_ticker=? AND trade_date<=? ORDER BY trade_date DESC LIMIT 1",
+        (ticker, exit_date),
+    ).fetchone()
+    if not entry or not exit_row or not entry[0]:
+        return None
+    return (exit_row[0] / entry[0] - 1) * 100
+
+
+def refresh_index_price_cache(connection):
+    """Cache index or index-tracking ETF closes in the same DB as stock prices."""
+    today = datetime.now(INDIA_TZ).date()
+    for ticker in INDEX_TICKERS:
+        latest = connection.execute(
+            "SELECT MAX(trade_date) FROM index_daily_prices WHERE index_ticker=?", (ticker,)
+        ).fetchone()[0]
+        start = (date.fromisoformat(latest) - timedelta(days=7)) if latest else today - timedelta(days=500)
+        try:
+            prices = yf.download(
+                ticker, start=start.isoformat(), end=(today + timedelta(days=1)).isoformat(),
+                interval="1d", auto_adjust=True, progress=False, threads=False,
+            )
+            if prices.empty:
+                print("No index prices returned:", ticker)
+                continue
+            if isinstance(prices.columns, pd.MultiIndex):
+                prices.columns = prices.columns.get_level_values(0)
+            rows = [
+                (ticker, pd.Timestamp(day).date().isoformat(), float(close))
+                for day, close in prices["Close"].dropna().items()
+            ]
+            connection.executemany(
+                "INSERT INTO index_daily_prices(index_ticker,trade_date,close) VALUES(?,?,?) "
+                "ON CONFLICT(index_ticker,trade_date) DO UPDATE SET close=excluded.close",
+                rows,
+            )
+            connection.commit()
+            print(f"Saved {len(rows)} index prices for {ticker}")
+        except Exception as error:
+            print("Index price update failed:", ticker, error)
+
+
+def get_stock_classification(connection, symbol, ticker):
+    cached = connection.execute(
+        "SELECT sector,sector_index FROM stock_classifications WHERE symbol=?", (symbol,)
+    ).fetchone()
+    if cached:
+        return cached
+    sector = None
+    sector_index = None
+    try:
+        sector = yf.Ticker(ticker).info.get("sector")
+        sector_index = SECTOR_INDEX_TICKERS.get(sector)
+    except Exception as error:
+        print("Sector lookup failed:", symbol, error)
+    connection.execute(
+        "INSERT OR REPLACE INTO stock_classifications(symbol,sector,sector_index,updated_at) VALUES(?,?,?,?)",
+        (symbol, sector, sector_index, datetime.now(INDIA_TZ).date().isoformat()),
+    )
+    connection.commit()
+    return sector, sector_index
 
 
 def refresh_price_cache(connection, symbol, ticker):
@@ -552,6 +733,11 @@ def analyse_stock(symbol, ticker_map, connection):
     )
 
     try:
+        sector, sector_index = get_stock_classification(connection, symbol, ticker)
+        market_cap_row = connection.execute(
+            "SELECT category FROM market_cap_categories WHERE symbol=?", (symbol,)
+        ).fetchone()
+        market_cap_index = CAP_INDEX_TICKERS.get(market_cap_row[0]) if market_cap_row else None
         try:
             refresh_price_cache(connection, symbol, ticker)
         except Exception as refresh_error:
@@ -681,6 +867,9 @@ def analyse_stock(symbol, ticker_map, connection):
 
         result = {
             "Stock": symbol,
+            "Sector": sector or "Unclassified",
+            "Sector_Index": sector_index or "",
+            "Market_Cap_Index": market_cap_index or "",
             "Yahoo_Ticker": ticker,
             "Date": df.index[-1].date(),
             "Close": round(latest, 2),
@@ -778,6 +967,8 @@ def run_scanner():
     v2_df.to_csv(OUTPUT_V2_CSV, index=False)
     save_momentum_rank_history(final_df, v2_df)
     update_rank_evaluations()
+    from publish_rank_history import export_rank_history
+    export_rank_history()
 
     final_df.to_excel(
         OUTPUT_EXCEL,

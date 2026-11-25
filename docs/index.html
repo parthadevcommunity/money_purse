@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NSE Momentum Ranks</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1020;--panel:#111a2e;--line:#26334d;--muted:#9aabc7;--text:#edf3ff;--accent:#7dd3fc}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top,#172746,var(--bg) 55%);color:var(--text);font:14px/1.45 system-ui,-apple-system,sans-serif}
+    main{max-width:1500px;margin:auto;padding:30px 22px 48px}h1{margin:0;font-size:clamp(25px,4vw,36px)}.sub{color:var(--muted);margin-top:5px}
+    .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:22px 0 14px}input,select{min-height:42px;border:1px solid var(--line);border-radius:10px;background:#101a2d;color:var(--text);padding:0 13px;font:inherit}input{flex:1 1 260px;max-width:450px}select{min-width:170px}
+    .panel{overflow:hidden;border:1px solid var(--line);border-radius:14px;background:#0e1729ef}.table-wrap{overflow:auto;max-height:76vh}table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;font-variant-numeric:tabular-nums}th,td{padding:10px 12px;text-align:left;white-space:nowrap;border-bottom:1px solid #202d43}th{position:sticky;top:0;background:#17243a;color:#d9e7fb;font-size:12px}th button{all:unset;cursor:pointer;font:inherit}th button:hover{color:var(--accent)}tbody tr:hover{background:#15233a}td:first-child,th:first-child{position:sticky;left:0;background:#111d31}th:first-child{z-index:2;background:#17243a}.foot{color:var(--muted);font-size:12px;margin:12px 2px}.error{padding:22px;color:#fecaca}
+  </style>
+</head>
+<body><main>
+  <h1>NSE Momentum Ranks</h1>
+  <div class="sub" id="info">Loading saved V2 snapshots…</div>
+  <div class="toolbar">
+    <label for="date">Rank date</label><select id="date"></select>
+    <input id="search" type="search" placeholder="Search stock or sector…" aria-label="Search stocks or sectors">
+    <select id="sector"><option value="">All sectors</option></select>
+    <select id="cap"><option value="">All market caps</option><option>Large Cap</option><option>Mid Cap</option><option>Small Cap</option><option>Unclassified</option></select>
+    <select id="status"><option value="">All momentum statuses</option></select>
+  </div>
+  <section class="panel"><div class="table-wrap" id="table"><div class="error">Loading ranks…</div></div></section>
+  <div class="foot">Static snapshot exported from the SQLite database by the scanner. The published date is shown above.</div>
+</main>
+<script>
+const $=s=>document.querySelector(s), esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let allRows=[],sortKey='Rank',sortDir=1;
+const cols=['Rank','Stock','Sector','Market_Cap','Momentum_V2_Score_%','Momentum_Status','Close','Return_1M_%','Return_3M_%','Return_6M_%','Sector_Index'];
+function compare(a,b,key){let x=String(a[key]??''),y=String(b[key]??''),nx=Number(x),ny=Number(y);if(x!==''&&y!==''&&Number.isFinite(nx)&&Number.isFinite(ny))return nx-ny;return x.localeCompare(y,undefined,{numeric:true,sensitivity:'base'});}
+function render(){const q=$('#search').value.trim().toLowerCase(),sector=$('#sector').value,cap=$('#cap').value,status=$('#status').value;let rows=allRows.filter(r=>(!q||r.Stock.toLowerCase().includes(q)||String(r.Sector).toLowerCase().includes(q))&&(!sector||r.Sector===sector)&&(!cap||r.Market_Cap===cap)&&(!status||r.Momentum_Status===status));rows.sort((a,b)=>sortDir*compare(a,b,sortKey));const head=`<thead><tr>${cols.map(c=>`<th><button data-key="${esc(c)}">${esc(c)} ${sortKey===c?(sortDir===1?'↑':'↓'):''}</button></th>`).join('')}</tr></thead>`;const body=rows.map(r=>`<tr>${cols.map(c=>`<td>${esc(r[c])}</td>`).join('')}</tr>`).join('');$('#table').innerHTML=`<table>${head}<tbody>${body}</tbody></table>`;$('#info').textContent=`V2 rank snapshot ${$('#date').value} · ${rows.length.toLocaleString()} of ${allRows.length.toLocaleString()} stocks`;document.querySelectorAll('th button').forEach(b=>b.onclick=()=>{if(sortKey===b.dataset.key)sortDir*=-1;else{sortKey=b.dataset.key;sortDir=1}render()});}
+async function loadDate(){try{const date=$('#date').value, data=await fetch(`ranks/${encodeURIComponent(date)}.json`,{cache:'no-store'}).then(r=>{if(!r.ok)throw Error(`Could not load ${date}`);return r.json()});allRows=data.rows;const sectors=[...new Set(allRows.map(r=>r.Sector).filter(Boolean))].sort();$('#sector').innerHTML='<option value="">All sectors</option>'+sectors.map(s=>`<option>${esc(s)}</option>`).join('');const statuses=[...new Set(allRows.map(r=>r.Momentum_Status).filter(Boolean))].sort();$('#status').innerHTML='<option value="">All momentum statuses</option>'+statuses.map(s=>`<option>${esc(s)}</option>`).join('');render()}catch(e){$('#table').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
+async function init(){try{const data=await fetch('ranks-index.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw Error('Rank index is not published yet');return r.json()});$('#date').innerHTML=data.snapshot_dates.map(d=>`<option>${esc(d)}</option>`).join('');if(!data.snapshot_dates.length)throw Error('No V2 snapshots found');$('#date').value=data.snapshot_dates[0];await loadDate()}catch(e){$('#info').textContent='Rank data unavailable';$('#table').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
+$('#date').addEventListener('change',loadDate);['search','sector','cap','status'].forEach(id=>$('#'+id).addEventListener(id==='search'?'input':'change',render));init();
+</script></body></html>
