@@ -28,6 +28,8 @@ Price history is cached in the database. A symbol already checked on the current
 
 Each scanner run also saves its V1 and V2 ranks in the `momentum_rank_history` table in the same database. This preserves daily rank snapshots for later comparison with future prices. A fresh database gets its first snapshot the next time you run the scanner; past rankings cannot be recovered unless you have their CSV files.
 
+The scanner evaluates saved rankings after 5, 20, and 60 trading sessions and stores results in `rank_forward_outcomes` and `rank_evaluation_runs`. The dashboard's **Ranking correctness** view reports how often V2's top 10% beat the median forward return among stocks with enough price data. Outcomes use the next session's adjusted close as entry and the close at the selected horizon as exit. A horizon remains pending until enough future prices are available.
+
 ## Open the local dashboard
 
 Start the dashboard:
@@ -46,6 +48,6 @@ The scanner imports market-cap categories into the database from [`amfi_market_c
 
 - `print_sorted_momentum.py` — prints momentum results in ranked order.
 - `new_code_transcipt_load_only.py` — downloads/caches NSE stock prices and generates momentum reports.
-- `momentum_dashboard.py` and `momentum_dashboard.html` — local SQLite-backed web dashboard.
+- `momentum_dashboard.py` and `momentum_dashboard.html` — local SQLite-backed web dashboard with ranking correctness results.
 
 Generated price databases and momentum CSV/XLSX outputs are local data files and are excluded from Git.

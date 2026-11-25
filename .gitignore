@@ -3,6 +3,8 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
 *_Momentum*.csv
 *_Momentum*.xlsx
 Nifty_Momentum_Scanner.csv

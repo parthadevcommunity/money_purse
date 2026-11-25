@@ -36,13 +36,22 @@
     .status { color:#a5f3fc }
     .footnote { margin:12px 2px; font-size:12px }
     .error { padding:22px; color:#fecaca }
+    .view-tabs { display:flex; gap:8px; margin-top:20px }
+    .view-tabs button[aria-pressed="true"] { border-color:var(--accent); color:var(--accent) }
+    .accuracy-copy { margin:10px 0 14px; color:var(--muted) }
+    [hidden] { display:none !important }
     @media(max-width:650px) { main {padding:22px 12px} #summary {margin-left:0;width:100%} }
   </style>
 </head>
 <body>
 <main>
   <h1>NSE Momentum Dashboard</h1>
-  <div class="sub" id="source">Loading CSV…</div>
+  <div class="sub" id="source">Loading database…</div>
+  <div class="view-tabs">
+    <button id="rank-tab" type="button" aria-pressed="true">Current ranks</button>
+    <button id="accuracy-tab" type="button" aria-pressed="false">Ranking correctness</button>
+  </div>
+  <section id="rank-view">
   <div class="toolbar">
     <input id="search" type="search" placeholder="Search stock name or ticker…" aria-label="Search stocks">
     <select id="cap"><option value="">All market caps</option><option>Large Cap</option><option>Mid Cap</option><option>Small Cap</option><option>Unclassified</option></select>
@@ -52,6 +61,16 @@
   </div>
   <section class="panel"><div class="table-wrap" id="table"><div class="error">Loading stock data…</div></div></section>
   <div class="footnote" id="note"></div>
+  </section>
+  <section id="accuracy-view" hidden>
+    <div class="toolbar">
+      <label for="horizon">Evaluation horizon</label>
+      <select id="horizon"><option value="5">5 trading days</option><option value="20" selected>20 trading days</option><option value="60">60 trading days</option></select>
+      <span id="accuracy-summary"></span>
+    </div>
+    <div class="accuracy-copy">A top 10% pick counts as correct when its forward return beats the median return among stocks with enough forward price data in that snapshot. Returns start at the next trading session after the ranking and are measured using adjusted daily closes. Incomplete horizons remain pending.</div>
+    <section class="panel"><div class="table-wrap" id="accuracy-table"><div class="error">Choose a horizon to load its evaluation.</div></div></section>
+  </section>
 </main>
 <script>
 const search = document.querySelector('#search'), capFilter = document.querySelector('#cap'), statusFilter = document.querySelector('#status');
@@ -60,7 +79,7 @@ const numeric = new Set();
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function cellValue(row,key) { return row[key] ?? ''; }
 function compare(a,b,key) {
-  const av=cellValue(a,key), bv=cellValue(b,key), an=Number(av), bn=Number(bv);
+  const av=String(cellValue(a,key)), bv=String(cellValue(b,key)), an=Number(av), bn=Number(bv);
   if (av.trim() !== '' && bv.trim() !== '' && Number.isFinite(an) && Number.isFinite(bn)) return an-bn;
   return av.localeCompare(bv, undefined, {numeric:true,sensitivity:'base'});
 }
@@ -93,6 +112,35 @@ Promise.all([fetch('/api/data').then(r=>r.json())]).then(([data])=>{
 }).catch(e=>{document.querySelector('#table').innerHTML=`<div class="error">Could not load stock data: ${esc(e.message)}</div>`;document.querySelector('#source').textContent='Dashboard data unavailable';});
 search.addEventListener('input',render); capFilter.addEventListener('change',render); statusFilter.addEventListener('change',render);
 document.querySelector('#reset').addEventListener('click',()=>{search.value='';capFilter.value='';statusFilter.value='';render();});
+
+async function loadAccuracy() {
+  const horizon=document.querySelector('#horizon').value, target=document.querySelector('#accuracy-table');
+  target.innerHTML='<div class="error">Loading evaluation…</div>';
+  try {
+    const data=await fetch(`/api/accuracy?horizon=${horizon}`,{cache:'no-store'}).then(r=>r.json());
+    if(data.error) throw new Error(data.error);
+    const summary=data.evaluated_snapshots
+      ? `Top 10%: ${data.correct.toLocaleString()} correct · ${data.incorrect.toLocaleString()} incorrect · ${data.correct_pct}% hit rate · ${data.evaluated_snapshots} evaluated snapshots · ${data.pending_snapshots} pending`
+      : `No completed evaluations yet · ${data.pending_snapshots} snapshot(s) pending`;
+    document.querySelector('#accuracy-summary').textContent=summary;
+    if(!data.rows.length) {
+      target.innerHTML=`<div class="error">No ${horizon}-session results yet. The scanner saves daily ranks; this horizon will appear after enough future daily prices are stored.</div>`;
+      return;
+    }
+    const cols=['Snapshot_Date','Ranked_Stocks','Evaluated_Stocks','Top_10_Count','Correct','Incorrect','Correct_%','Top_10_Avg_Return_%','Other_Stocks_Avg_Return_%','Universe_Median_Return_%'];
+    target.innerHTML=`<table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${data.rows.map(row=>`<tr>${cols.map(c=>`<td>${esc(row[c])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  } catch(error) { target.innerHTML=`<div class="error">Could not load ranking evaluation: ${esc(error.message)}</div>`; }
+}
+document.querySelector('#rank-tab').addEventListener('click',()=>{
+  document.querySelector('#rank-view').hidden=false; document.querySelector('#accuracy-view').hidden=true;
+  document.querySelector('#rank-tab').setAttribute('aria-pressed','true'); document.querySelector('#accuracy-tab').setAttribute('aria-pressed','false');
+});
+document.querySelector('#accuracy-tab').addEventListener('click',()=>{
+  document.querySelector('#rank-view').hidden=true; document.querySelector('#accuracy-view').hidden=false;
+  document.querySelector('#rank-tab').setAttribute('aria-pressed','false'); document.querySelector('#accuracy-tab').setAttribute('aria-pressed','true');
+  loadAccuracy();
+});
+document.querySelector('#horizon').addEventListener('change',loadAccuracy);
 </script>
 </body>
 </html>

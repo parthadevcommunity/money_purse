@@ -105,6 +105,32 @@ def open_price_database():
             average_market_cap REAL,
             as_of TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS rank_evaluation_runs (
+            snapshot_date TEXT NOT NULL,
+            model TEXT NOT NULL,
+            horizon INTEGER NOT NULL,
+            evaluated_at TEXT NOT NULL,
+            ranked_count INTEGER NOT NULL,
+            evaluated_count INTEGER NOT NULL,
+            universe_median_return REAL NOT NULL,
+            PRIMARY KEY (snapshot_date, model, horizon)
+        );
+        CREATE TABLE IF NOT EXISTS rank_forward_outcomes (
+            snapshot_date TEXT NOT NULL,
+            model TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            horizon INTEGER NOT NULL,
+            rank INTEGER NOT NULL,
+            top_decile INTEGER NOT NULL,
+            entry_date TEXT NOT NULL,
+            exit_date TEXT NOT NULL,
+            entry_close REAL NOT NULL,
+            exit_close REAL NOT NULL,
+            return_pct REAL NOT NULL,
+            universe_median_return REAL NOT NULL,
+            correct INTEGER NOT NULL,
+            PRIMARY KEY (snapshot_date, model, symbol, horizon)
+        );
         """
     )
     rank_columns = {
@@ -193,6 +219,122 @@ def save_momentum_rank_history(v1_df, v2_df):
             f"Saved ranking history: {len(v1_df)} V1 and {len(v2_df)} V2 stocks "
             f"for {snapshot_date}"
         )
+    finally:
+        connection.close()
+
+
+def update_rank_evaluations():
+    """Score matured rank snapshots at 5, 20, and 60 trading-session horizons."""
+    horizons = (5, 20, 60)
+    connection = open_price_database()
+    try:
+        for model in ("V1", "V2"):
+            for horizon in horizons:
+                pending_dates = [
+                    row[0]
+                    for row in connection.execute(
+                        """
+                        SELECT DISTINCT h.snapshot_date
+                        FROM momentum_rank_history h
+                        WHERE h.model=? AND NOT EXISTS (
+                            SELECT 1 FROM rank_evaluation_runs e
+                            WHERE e.snapshot_date=h.snapshot_date
+                              AND e.model=h.model AND e.horizon=?
+                        )
+                        ORDER BY h.snapshot_date
+                        """,
+                        (model, horizon),
+                    )
+                ]
+                for snapshot_date in pending_dates:
+                    signals = connection.execute(
+                        """
+                        SELECT data_date, symbol, rank
+                        FROM momentum_rank_history
+                        WHERE snapshot_date=? AND model=?
+                        ORDER BY rank
+                        """,
+                        (snapshot_date, model),
+                    ).fetchall()
+                    if not signals:
+                        continue
+                    newest_data_date = max(row[0] for row in signals)
+                    market_sessions = connection.execute(
+                        """
+                        SELECT DISTINCT trade_date FROM daily_prices
+                        WHERE trade_date > ? ORDER BY trade_date LIMIT ?
+                        """,
+                        (newest_data_date, horizon + 1),
+                    ).fetchall()
+                    if len(market_sessions) < horizon + 1:
+                        continue
+
+                    outcomes = []
+                    for data_date, symbol, rank in signals:
+                        prices = connection.execute(
+                            """
+                            SELECT trade_date, close FROM daily_prices
+                            WHERE symbol=? AND trade_date > ? AND close IS NOT NULL
+                            ORDER BY trade_date LIMIT ?
+                            """,
+                            (symbol, data_date, horizon + 1),
+                        ).fetchall()
+                        if len(prices) < horizon + 1:
+                            continue
+                        entry_date, entry_close = prices[0]
+                        exit_date, exit_close = prices[horizon]
+                        if not entry_close:
+                            continue
+                        forward_return = (exit_close / entry_close - 1) * 100
+                        outcomes.append((
+                            str(symbol), int(rank), entry_date, exit_date,
+                            float(entry_close), float(exit_close), float(forward_return),
+                        ))
+                    if not outcomes:
+                        continue
+
+                    sorted_returns = sorted(outcome[6] for outcome in outcomes)
+                    middle = len(sorted_returns) // 2
+                    if len(sorted_returns) % 2:
+                        median_return = sorted_returns[middle]
+                    else:
+                        median_return = (sorted_returns[middle - 1] + sorted_returns[middle]) / 2
+                    top_cutoff = (len(signals) + 9) // 10
+                    evaluated_at = datetime.now(INDIA_TZ).date().isoformat()
+                    connection.executemany(
+                        """
+                        INSERT INTO rank_forward_outcomes
+                            (snapshot_date, model, symbol, horizon, rank, top_decile,
+                             entry_date, exit_date, entry_close, exit_close, return_pct,
+                             universe_median_return, correct)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (
+                                snapshot_date, model, symbol, horizon, rank,
+                                int(rank <= top_cutoff), entry_date, exit_date,
+                                entry_close, exit_close, forward_return, median_return,
+                                int(forward_return > median_return),
+                            )
+                            for (symbol, rank, entry_date, exit_date,
+                                 entry_close, exit_close, forward_return) in outcomes
+                        ],
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO rank_evaluation_runs
+                            (snapshot_date, model, horizon, evaluated_at, ranked_count,
+                             evaluated_count, universe_median_return)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (snapshot_date, model, horizon, evaluated_at, len(signals),
+                         len(outcomes), median_return),
+                    )
+                    connection.commit()
+                    print(
+                        f"Evaluated {model} ranks from {snapshot_date} at {horizon} "
+                        f"sessions: {len(outcomes)}/{len(signals)} stocks"
+                    )
     finally:
         connection.close()
 
@@ -622,6 +764,7 @@ v2_df = final_df.sort_values(
 v2_df.insert(0, "Momentum_V2_Rank", range(1, len(v2_df) + 1))
 v2_df.to_csv(OUTPUT_V2_CSV, index=False)
 save_momentum_rank_history(final_df, v2_df)
+update_rank_evaluations()
 
 final_df.to_excel(
     OUTPUT_EXCEL,
