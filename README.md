@@ -26,6 +26,14 @@ The scanner reads the NSE equity symbol list, updates the SQLite price cache at 
 
 Stocks that cannot be processed are logged in the SQLite `stock_data_issues` table. It records the symbol, Yahoo ticker, reason, number of traded sessions found, required history, cached date coverage, last price-download error, attempt count, and whether the issue is still pending or has been resolved. A later successful scan marks that symbol's pending issues resolved. To inspect unresolved rows, query `SELECT * FROM stock_data_issues WHERE status='pending'` in the database.
 
+To retry pending downloads with a longer history window, run:
+
+```bash
+python3 retry_stock_data.py
+```
+
+The retry script saves recovered daily prices to the database. Symbols with at least 200 traded sessions are marked `ready_for_rescan`; run the scanner again to process and rank them. Remaining failures print their ticker, cached date range, session count, and download error for manual review, and stay `pending` in `stock_data_issues`.
+
 Price history is cached in the database. A symbol already checked on the current date is skipped. On a later date, the scanner refreshes recent history with a seven-day overlap; a symbol with no cached prices starts with about 400 calendar days of history. This overlap allows recent price corrections to be applied.
 
 Each scanner run also saves its V1 and V2 ranks in the `momentum_rank_history` table in the same database. This preserves daily rank snapshots for later comparison with future prices. A fresh database gets its first snapshot the next time you run the scanner; past rankings cannot be recovered unless you have their CSV files.

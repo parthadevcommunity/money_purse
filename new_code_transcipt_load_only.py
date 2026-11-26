@@ -535,7 +535,7 @@ def resolve_stock_data_issues(connection, symbol):
     connection.execute(
         """
         UPDATE stock_data_issues SET status='resolved',resolved_at=?
-        WHERE symbol=? AND status='pending'
+        WHERE symbol=? AND status IN ('pending','ready_for_rescan')
         """,
         (datetime.now(INDIA_TZ).isoformat(timespec="seconds"), symbol),
     )
