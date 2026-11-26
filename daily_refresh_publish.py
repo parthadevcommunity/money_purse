@@ -118,8 +118,9 @@ def main() -> int:
             "SELECT MAX(snapshot_date) FROM momentum_rank_history WHERE model='V2'"
         ).fetchone()[0]
         latest_price_date = connection.execute(
-            "SELECT MAX(data_date) FROM momentum_rank_history "
-            "WHERE model='V2' AND snapshot_date=?",
+            "SELECT data_date FROM momentum_rank_history "
+            "WHERE model='V2' AND snapshot_date=? "
+            "GROUP BY data_date ORDER BY COUNT(*) DESC, data_date DESC LIMIT 1",
             (snapshot,),
         ).fetchone()[0] if snapshot else None
     if snapshot != today.isoformat() or latest_price_date != today.isoformat():

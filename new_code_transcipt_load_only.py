@@ -263,7 +263,17 @@ def open_price_database():
 
 def save_momentum_rank_history(v1_df, v2_df):
     """Persist this run's V1 and V2 rankings for later forward-return analysis."""
-    snapshot_date = datetime.now(INDIA_TZ).date().isoformat()
+    # Name the snapshot for the trading date represented by the prices being
+    # ranked, rather than the wall-clock date when the scan happened. A scan
+    # run before market close can otherwise overwrite the prior session.
+    data_dates = pd.to_datetime(v2_df["Date"], errors="coerce").dt.date
+    date_counts = data_dates.value_counts()
+    if date_counts.empty:
+        raise ValueError("Cannot save rank history: no valid price dates in V2 results")
+    most_common_count = date_counts.max()
+    snapshot_date = max(
+        day for day, count in date_counts.items() if count == most_common_count
+    ).isoformat()
     connection = open_price_database()
     try:
         for model, frame, rank_column, score_column in (
