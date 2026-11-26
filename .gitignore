@@ -10,4 +10,5 @@ __pycache__/
 Nifty_Momentum_Scanner.csv
 Nifty_Momentum_Scanner.xlsx
 youtube_cookies.txt
+logs/
 .DS_Store

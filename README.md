@@ -83,6 +83,22 @@ python3 new_code_transcipt_load_only.py
 
 The scanner updates the SQLite database and local ranking files. The publishing script does not download prices or change the database; it exports the saved ranks and pushes the static files. The push triggers the Pages deployment workflow.
 
+### Schedule the daily refresh
+
+Install the 5:00 pm Asia/Kolkata weekday job on this Mac with:
+
+```bash
+./install_daily_job.sh
+```
+
+The LaunchAgent checks NSE's official Cash Market holiday calendar and skips weekends and listed market holidays. If it cannot verify the calendar, it skips the run and logs the reason. It also skips publishing unless the new rank snapshot contains prices dated today. Logs are written to `logs/daily_refresh_publish.log` and `logs/daily_refresh_publish_error.log`. To check today's holiday status without running the scanner, use `python3 daily_refresh_publish.py --check-only`.
+
+To remove the scheduled job:
+
+```bash
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.parthadevcommunity.moneypurse.daily-refresh.plist"
+```
+
 ## Other files
 
 - `print_sorted_momentum.py` — prints momentum results in ranked order.
