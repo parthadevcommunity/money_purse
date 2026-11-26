@@ -64,13 +64,13 @@ The static site is in [`docs/`](docs/). After each scanner run, the saved V2 ran
 
 To publish the page, configure GitHub Pages once under **Settings → Pages → Build and deployment → Source** and choose **GitHub Actions**. The Actions workflow uploads the static `docs/` site and deploys it. To update rank data, run the scanner and push changed `docs/` files to `main`; that push triggers deployment. The page URL is `https://parthadevcommunity.github.io/money_purse/`.
 
-If you only need to refresh the static rank files from the existing database without scanning prices again, run:
+To export, commit, and push the saved rank snapshots to GitHub Pages, run:
 
 ```bash
-python3 publish_rank_history.py
+./publish_ranks.sh
 ```
 
-Commit and push the resulting `docs/` changes for them to appear on the public site.
+The script does not download prices or change the SQLite database; it publishes the saved ranks. The push triggers the Pages deployment workflow.
 
 ## Other files
 
