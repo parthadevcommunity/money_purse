@@ -24,6 +24,8 @@ python3 new_code_transcipt_load_only.py
 
 The scanner reads the NSE equity symbol list, updates the SQLite price cache at `nse_stock_prices.sqlite3`, calculates momentum, and writes its CSV/XLSX output files, including `NSE_All_Stocks_Momentum_V2.csv`.
 
+Stocks that cannot be processed are logged in the SQLite `stock_data_issues` table. It records the symbol, Yahoo ticker, reason, number of traded sessions found, required history, cached date coverage, last price-download error, attempt count, and whether the issue is still pending or has been resolved. A later successful scan marks that symbol's pending issues resolved. To inspect unresolved rows, query `SELECT * FROM stock_data_issues WHERE status='pending'` in the database.
+
 Price history is cached in the database. A symbol already checked on the current date is skipped. On a later date, the scanner refreshes recent history with a seven-day overlap; a symbol with no cached prices starts with about 400 calendar days of history. This overlap allows recent price corrections to be applied.
 
 Each scanner run also saves its V1 and V2 ranks in the `momentum_rank_history` table in the same database. This preserves daily rank snapshots for later comparison with future prices. A fresh database gets its first snapshot the next time you run the scanner; past rankings cannot be recovered unless you have their CSV files.

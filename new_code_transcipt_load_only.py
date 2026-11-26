@@ -107,6 +107,25 @@ def open_price_database():
             symbol TEXT PRIMARY KEY,
             last_checked_date TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS stock_data_issues (
+            symbol TEXT NOT NULL,
+            issue_type TEXT NOT NULL,
+            yahoo_ticker TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 1,
+            traded_rows INTEGER,
+            required_rows INTEGER,
+            first_price_date TEXT,
+            last_price_date TEXT,
+            reason TEXT NOT NULL,
+            price_update_error TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            resolved_at TEXT,
+            PRIMARY KEY (symbol, issue_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_stock_data_issues_status
+            ON stock_data_issues(status, last_seen_at);
         CREATE TABLE IF NOT EXISTS momentum_rank_history (
             snapshot_date TEXT NOT NULL,
             data_date TEXT NOT NULL,
@@ -478,6 +497,51 @@ def get_index_return(connection, ticker, entry_date, exit_date):
     return (exit_row[0] / entry[0] - 1) * 100
 
 
+def record_stock_data_issue(
+    connection, symbol, ticker, issue_type, reason, traded_rows=None,
+    required_rows=None, prices=None, price_update_error=None,
+):
+    """Upsert a stock that could not be processed, preserving its first-seen date."""
+    now = datetime.now(INDIA_TZ).isoformat(timespec="seconds")
+    first_price_date = prices.index[0].date().isoformat() if prices is not None and not prices.empty else None
+    last_price_date = prices.index[-1].date().isoformat() if prices is not None and not prices.empty else None
+    connection.execute(
+        """
+        INSERT INTO stock_data_issues
+            (symbol,issue_type,yahoo_ticker,first_seen_at,last_seen_at,attempt_count,
+             traded_rows,required_rows,first_price_date,last_price_date,reason,
+             price_update_error,status,resolved_at)
+        VALUES (?,?,?,?,?,1,?,?,?,?,?,?, 'pending',NULL)
+        ON CONFLICT(symbol,issue_type) DO UPDATE SET
+            yahoo_ticker=excluded.yahoo_ticker,
+            last_seen_at=excluded.last_seen_at,
+            attempt_count=stock_data_issues.attempt_count+1,
+            traded_rows=excluded.traded_rows,
+            required_rows=excluded.required_rows,
+            first_price_date=excluded.first_price_date,
+            last_price_date=excluded.last_price_date,
+            reason=excluded.reason,
+            price_update_error=excluded.price_update_error,
+            status='pending',
+            resolved_at=NULL
+        """,
+        (symbol, issue_type, ticker, now, now, traded_rows, required_rows,
+         first_price_date, last_price_date, reason, price_update_error),
+    )
+    connection.commit()
+
+
+def resolve_stock_data_issues(connection, symbol):
+    connection.execute(
+        """
+        UPDATE stock_data_issues SET status='resolved',resolved_at=?
+        WHERE symbol=? AND status='pending'
+        """,
+        (datetime.now(INDIA_TZ).isoformat(timespec="seconds"), symbol),
+    )
+    connection.commit()
+
+
 def refresh_index_price_cache(connection):
     """Cache index or index-tracking ETF closes in the same DB as stock prices."""
     today = datetime.now(INDIA_TZ).date()
@@ -732,6 +796,7 @@ def analyse_stock(symbol, ticker_map, connection):
         symbol + ".NS"
     )
 
+    price_update_error = None
     try:
         sector, sector_index = get_stock_classification(connection, symbol, ticker)
         market_cap_row = connection.execute(
@@ -742,6 +807,7 @@ def analyse_stock(symbol, ticker_map, connection):
             refresh_price_cache(connection, symbol, ticker)
         except Exception as refresh_error:
             print("Price update failed:", symbol, refresh_error)
+            price_update_error = str(refresh_error)
 
         df = load_cached_prices(connection, symbol)
         # Yahoo can include placeholder rows with no traded volume. They are
@@ -753,7 +819,13 @@ def analyse_stock(symbol, ticker_map, connection):
             ]
 
         if df.empty or len(df) < 200:
-            print("Insufficient traded history:", symbol)
+            reason = f"Insufficient traded history: {len(df)} sessions found; at least 200 are required"
+            print(reason + ":", symbol)
+            record_stock_data_issue(
+                connection, symbol, ticker, "insufficient_history", reason,
+                traded_rows=len(df), required_rows=200, prices=df,
+                price_update_error=price_update_error,
+            )
             return None
 
         if isinstance(df.columns, pd.MultiIndex):
@@ -888,10 +960,15 @@ def analyse_stock(symbol, ticker_map, connection):
             "Momentum_Status": status
         }
         result.update(calculate_momentum_v2(df))
+        resolve_stock_data_issues(connection, symbol)
         return result
 
     except Exception as e:
         print("Error:", symbol, e)
+        record_stock_data_issue(
+            connection, symbol, ticker, "analysis_error", str(e),
+            price_update_error=price_update_error,
+        )
         return None
 
 
@@ -914,6 +991,10 @@ def run_scanner():
             result = analyse_stock(stock, ticker_map, price_db)
             if result is not None:
                 results.append(result)
+        pending_issues = price_db.execute(
+            "SELECT COUNT(*) FROM stock_data_issues WHERE status='pending'"
+        ).fetchone()[0]
+        print("Stocks needing further processing:", pending_issues)
     finally:
         price_db.close()
 
