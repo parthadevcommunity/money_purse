@@ -66,6 +66,18 @@ Open [http://127.0.0.1:8765](http://127.0.0.1:8765) in a browser. The dashboard 
 
 The table supports searching, filtering by momentum status and market-cap category, and sorting by any column. The dashboard always shows the latest V2 snapshot; it has no CSV input option.
 
+## Nifty factor macro on GitHub Pages
+
+The compact static dashboard is `docs/macro.html`. It shows the factor result, why it was selected (or withheld), and all four parsed values with source publication dates. Refresh the existing SQLite database and create its public JSON snapshot with:
+
+```bash
+python3 macro_factor_data.py
+```
+
+The script fetches quarterly real GDP growth from MoSPI, household inflation expectations from RBI's IESH release, and two daily 10-year G-Sec par yields from FBIL. These observations and the decision history are stored in the existing `nse_stock_prices.sqlite3`; only the compact `docs/macro-momentum.json` snapshot is published. `publish_ranks.sh` runs the refresh before exporting site data.
+
+PMI is read from `data/macro/pmi.csv` (or `PMI_CSV_PATH`) with `date,value` columns. Supply an authorized PMI export and use its original publication date. S&P Global's public release terms prohibit unauthorized republication, so the script does not scrape or copy PMI. With no fresh authorized PMI file, GitHub Pages explains that no factor can be recommended. If the RBI release page changes, set `RBI_IESH_URL`. MoSPI's API omits publication dates; verify a new GDP release and add it to `GDP_RELEASE_DATES` or pass `GDP_PUBLICATION_DATE`.
+
 The scanner imports market-cap categories into the database from [`amfi_market_cap_2026-06.csv`](amfi_market_cap_2026-06.csv). Categories come from AMFI's six-month average market capitalization list dated June 30, 2026. Symbols without a match are shown as `Unclassified`. See [AMFI's stock categorisation page](https://www.amfiindia.com/otherdata/categorisation-of-stocks) for the source list. The included classification file is a dated snapshot and does not update automatically.
 
 ## Publish rank snapshots with GitHub Pages

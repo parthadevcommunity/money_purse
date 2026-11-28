@@ -1,4 +1,5 @@
 __pycache__/
+.venv/
 *.py[cod]
 *.db
 *.sqlite
@@ -12,3 +13,4 @@ Nifty_Momentum_Scanner.xlsx
 youtube_cookies.txt
 logs/
 .DS_Store
+.env

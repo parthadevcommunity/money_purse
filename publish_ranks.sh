@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
+python3 macro_factor_data.py
 python3 publish_rank_history.py
 git add docs
 

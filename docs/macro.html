@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Momentum | Nifty Factor Macro</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1020;--panel:#111a2e;--line:#26334d;--muted:#9aabc7;--text:#edf3ff;--accent:#7dd3fc;--green:#86efac;--red:#fca5a5}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(ellipse at top,#172746,var(--bg) 58%);color:var(--text);font:15px/1.5 system-ui,-apple-system,sans-serif}
+    main{max-width:900px;margin:0 auto;padding:46px 20px}h1{font-size:clamp(32px,6vw,48px);margin:0 0 18px}.panel{border:1px solid var(--line);border-radius:18px;background:#0e1729ef;padding:22px;margin:14px 0}.pick{font-size:clamp(24px,4vw,34px);font-weight:750;margin:0 0 8px}.reason,.meta,.foot{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}.item{border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:13px}.label{font-size:12px;color:var(--muted)}.value{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}.source{font-size:12px;color:var(--muted);margin-top:4px}.status{font-size:12px;margin-top:6px}.fresh{color:var(--green)}.stale{color:var(--red)}a{color:var(--accent)}.foot{font-size:12px;margin-top:18px}.error{color:var(--red)}
+  </style>
+</head>
+<body><main>
+  <h1>Momentum</h1>
+  <section class="panel" aria-live="polite">
+    <p class="pick" id="recommendation">Loading factor indication…</p>
+    <div class="reason" id="reason"></div>
+    <div class="meta" id="regime"></div>
+  </section>
+  <section class="panel"><div class="grid" id="values"></div></section>
+  <p class="foot" id="updated"></p>
+  <p class="foot">Categorical framework display, not investment advice. PMI is read only from an authorized CSV. <a href="index.html">Open stock momentum ranks</a>.</p>
+</main>
+<script>
+const labels={gdp:'Real GDP growth',pmi:'Manufacturing PMI',inflation:'One-year inflation expectation',bond_yield:'10-year FBIL par yield'};
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function load(){try{const r=await fetch('macro-momentum.json',{cache:'no-store'});if(!r.ok)throw Error('Macro snapshot is not published yet.');const d=await r.json();document.querySelector('#recommendation').textContent=d.recommendation;document.querySelector('#reason').textContent=d.reason;document.querySelector('#regime').textContent=`Growth: ${d.growth_state} · Rates: ${d.rates_state} · 10Y yield trend: ${d.yield_direction}`;document.querySelector('#values').innerHTML=Object.entries(labels).map(([key,label])=>{const item=d.indicators[key],fresh=d.freshness[key];const value=item?`${Number(item.value).toFixed(key==='pmi'?1:2)}${key==='pmi'?'':'%'}`:'—';const source=item?.source_name||'';return `<article class="item"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="source">Published: ${esc(item?.publication_date||'No observation')} · ${esc(item?.reference_period||'')}${source?` · ${esc(source)}`:''}</div><div class="status ${fresh?.fresh?'fresh':'stale'}">${fresh?.fresh?'Fresh':'Missing / stale'}${fresh?.age_days!==null&&fresh?.age_days!==undefined?` · ${fresh.age_days} days old`:''}</div></article>`}).join('');document.querySelector('#updated').textContent=`Snapshot updated ${d.updated_at}; source publication dates are retained.`}catch(e){document.querySelector('#recommendation').textContent='Data unavailable';document.querySelector('#reason').textContent=e.message;document.querySelector('#reason').classList.add('error')}}load();
+</script></body></html>
