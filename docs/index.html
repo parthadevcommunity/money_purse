@@ -17,13 +17,6 @@
 <body><main>
   <h1>NSE Momentum Ranks</h1>
   <div class="sub" id="info">Loading saved V2 snapshots…</div>
-  <div class="toolbar">
-    <label for="date">Rank date</label><select id="date"></select>
-    <input id="search" type="search" placeholder="Search stock or sector…" aria-label="Search stocks or sectors">
-    <select id="sector"><option value="">All sectors</option></select>
-    <select id="cap"><option value="">All market caps</option><option>Large Cap</option><option>Mid Cap</option><option>Small Cap</option><option>Unclassified</option></select>
-    <select id="status"><option value="">All momentum statuses</option></select>
-  </div>
   <section class="breadth-panel" aria-labelledby="breadth-heading">
     <h2 class="sector-heading" id="breadth-heading">Sector stock momentum breadth</h2>
     <div class="sector-note">Compare sector momentum breadth, return strength, and historical forward returns. Lines use a 5-snapshot moving average. V2 awards 30 points for its 52-week-high check; that check is unavailable until 252 price sessions exist for a stock, so early score-share values are affected by limited stored history.</div>
@@ -42,6 +35,13 @@
   <h2 class="sector-heading">Sector index momentum</h2>
   <div class="sector-note" id="sector-note">Change in each mapped sector index between its latest saved closes on or before the selected rank date. This is index performance, not the average stock return.</div>
   <div class="sector-grid" id="sector-summary"></div>
+  <div class="toolbar">
+    <label for="date">Rank date</label><select id="date"></select>
+    <input id="search" type="search" placeholder="Search stock or sector…" aria-label="Search stocks or sectors">
+    <select id="sector"><option value="">All sectors</option></select>
+    <select id="cap"><option value="">All market caps</option><option>Large Cap</option><option>Mid Cap</option><option>Small Cap</option><option>Unclassified</option></select>
+    <select id="status"><option value="">All momentum statuses</option></select>
+  </div>
   <section class="panel"><div class="table-wrap" id="table"><div class="error">Loading ranks…</div></div></section>
   <div class="foot">Static snapshot exported from the SQLite database by the scanner. The published date is shown above.</div>
 </main>
