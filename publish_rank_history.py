@@ -12,20 +12,46 @@ ROOT = Path(__file__).resolve().parent
 DATABASE = ROOT / "nse_stock_prices.sqlite3"
 PUBLIC_DIR = ROOT / "docs"
 RANKS_DIR = PUBLIC_DIR / "ranks"
+SECTOR_OVERRIDES = {
+    "ARTEMISMED": "Healthcare",
+    "GUJRAFFIA": "Basic Materials",
+    "OLIL": "Industrials",
+    "SPECIALITY": "Consumer Cyclical",
+    "WILLAMAGOR": "Financial Services",
+    "ZAGGLE": "Technology",
+    "ZODIAC": "Utilities",
+}
+SECTOR_INDEXES = {
+    "Technology": "^CNXIT", "Financial Services": "^CNXFINANCE",
+    "Healthcare": "^CNXPHARMA", "Consumer Defensive": "^CNXFMCG",
+    "Consumer Cyclical": "^CNXAUTO", "Industrials": "^CNXCG",
+    "Basic Materials": "^CNXMETAL", "Energy": "^CNXENERGY",
+    "Utilities": "^CNXENERGY", "Communication Services": "^CNXMEDIA",
+    "Real Estate": "^CNXREALTY",
+}
 
 
 def summarize_breadth(rows: list[dict]) -> dict:
     groups: dict[tuple[str, str | None], list[int]] = {}
+    missing_sector = 0
+    missing_market_cap = 0
     for row in rows:
         try:
             score = float(row["Momentum_V2_Score_%"])
         except (TypeError, ValueError):
             continue
-        sector = row["Sector"] or "Unclassified"
-        cap = row["Market_Cap"] or "Unclassified"
-        for key in ((sector, None), (sector, cap)):
-            counts = groups.setdefault(key, [0, 0])
+        sector = row["Sector"]
+        cap = row["Market_Cap"]
+        if not sector or sector == "Unclassified":
+            missing_sector += 1
+            continue
+        counts = groups.setdefault((sector, None), [0, 0])
+        counts[0 if score >= 75 else 1] += 1
+        if cap in ("Large Cap", "Mid Cap", "Small Cap"):
+            counts = groups.setdefault((sector, cap), [0, 0])
             counts[0 if score >= 75 else 1] += 1
+        else:
+            missing_market_cap += 1
 
     def summary(counts: list[int]) -> dict:
         positive, negative = counts
@@ -48,7 +74,12 @@ def summarize_breadth(rows: list[dict]) -> dict:
             sectors[sector] = summary(counts)
         else:
             sector_market_caps.setdefault(sector, {})[cap] = summary(counts)
-    return {"sectors": sectors, "sector_market_caps": sector_market_caps}
+    return {
+        "sectors": sectors,
+        "sector_market_caps": sector_market_caps,
+        "excluded_missing_sector": missing_sector,
+        "excluded_missing_market_cap": missing_market_cap,
+    }
 
 
 def export_rank_history() -> int:
@@ -95,6 +126,9 @@ def export_rank_history() -> int:
             for symbol, rank, score, status, close, metrics_json in records:
                 metrics = json.loads(metrics_json) if metrics_json else {}
                 sector, sector_index = sectors.get(symbol, (None, None))
+                sector = SECTOR_OVERRIDES.get(symbol, sector)
+                if sector and not sector_index:
+                    sector_index = SECTOR_INDEXES.get(sector)
                 rows.append({
                     "Rank": rank,
                     "Stock": symbol,
@@ -111,6 +145,8 @@ def export_rank_history() -> int:
             sector_momentum = {}
             sector_tickers = {}
             for symbol, (sector, ticker) in sectors.items():
+                sector = SECTOR_OVERRIDES.get(symbol, sector)
+                ticker = ticker or SECTOR_INDEXES.get(sector)
                 if sector and ticker:
                     sector_tickers.setdefault(sector, ticker)
             for sector, ticker in sorted(sector_tickers.items()):

@@ -48,6 +48,15 @@ SECTOR_INDEX_TICKERS = {
     "Communication Services": "^CNXMEDIA",
     "Real Estate": "^CNXREALTY",
 }
+MANUAL_SECTOR_CLASSIFICATIONS = {
+    "ARTEMISMED": "Healthcare",
+    "GUJRAFFIA": "Basic Materials",
+    "OLIL": "Industrials",
+    "SPECIALITY": "Consumer Cyclical",
+    "WILLAMAGOR": "Financial Services",
+    "ZAGGLE": "Technology",
+    "ZODIAC": "Utilities",
+}
 INDEX_TICKERS = sorted(set(CAP_INDEX_TICKERS.values()) | set(SECTOR_INDEX_TICKERS.values()))
 
 # ==========================================
@@ -586,6 +595,16 @@ def refresh_index_price_cache(connection):
 
 
 def get_stock_classification(connection, symbol, ticker):
+    manual_sector = MANUAL_SECTOR_CLASSIFICATIONS.get(symbol)
+    if manual_sector:
+        sector_index = SECTOR_INDEX_TICKERS[manual_sector]
+        connection.execute(
+            "INSERT OR REPLACE INTO stock_classifications(symbol,sector,sector_index,classification_source,updated_at) "
+            "VALUES(?,?,?,'Manual review',?)",
+            (symbol, manual_sector, sector_index, datetime.now(INDIA_TZ).date().isoformat()),
+        )
+        connection.commit()
+        return manual_sector, sector_index
     cached = connection.execute(
         "SELECT sector,sector_index FROM stock_classifications WHERE symbol=?", (symbol,)
     ).fetchone()
