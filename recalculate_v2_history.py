@@ -97,6 +97,12 @@ def recalculate() -> tuple[int, int]:
                 else np.nan
             )
             latest_volume = volume.iloc[position]
+            trailing_returns = {}
+            for label, lookback in (("1M", 21), ("3M", 63), ("6M", 126)):
+                trailing = np.nan
+                if position >= lookback and pd.notna(close.iloc[position - lookback]) and close.iloc[position - lookback] != 0:
+                    trailing = (last_close / close.iloc[position - lookback] - 1) * 100
+                trailing_returns[label] = trailing
             checks = {
                 "V2_Close_Above_EMA50": bool(pd.notna(last_close) and pd.notna(last_ema50) and last_close > last_ema50),
                 "V2_Close_Above_EMA20": bool(pd.notna(last_close) and pd.notna(last_ema20) and last_close > last_ema20),
@@ -123,6 +129,9 @@ def recalculate() -> tuple[int, int]:
             metrics["V2_Pct_Below_52W_High"] = round(float(pct_below_high), 2) if pd.notna(pct_below_high) else None
             metrics["V2_ATR14_%"] = round(float(last_atr_pct), 2) if pd.notna(last_atr_pct) else None
             metrics["V2_CCI20_Slope"] = round(float(slope_value), 2) if pd.notna(slope_value) else None
+            metrics["Return_1M_%"] = round(float(trailing_returns["1M"]), 2) if pd.notna(trailing_returns["1M"]) else ""
+            metrics["Return_3M_%"] = round(float(trailing_returns["3M"]), 2) if pd.notna(trailing_returns["3M"]) else ""
+            metrics["Return_6M_%"] = round(float(trailing_returns["6M"]), 2) if pd.notna(trailing_returns["6M"]) else ""
             metrics.update({name: str(passed) for name, passed in checks.items()})
             updates.append((float(score), json.dumps(metrics, allow_nan=False), snapshot["snapshot_date"], symbol))
             calculated += 1
