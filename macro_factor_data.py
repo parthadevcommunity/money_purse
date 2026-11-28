@@ -211,20 +211,66 @@ def get_latest(db: sqlite3.Connection, indicator: str) -> dict | None:
     return dict(zip(keys, row)) if row else None
 
 
-def classify_growth(gdp: float | None, pmi: float | None) -> str:
-    if gdp is None or pmi is None:
-        return "Insufficient data"
-    a = "Up" if gdp >= 6 else "Down" if gdp <= 5 else "Neutral"
-    b = "Up" if pmi > 55 else "Down" if pmi < 50 else "Neutral"
-    return a if a == b and a in {"Up", "Down"} else "Mixed / Neutral"
+def nifty_factor_decision(
+    gdp: float | None,
+    pmi: float | None,
+    inflation: float | None,
+    yield_previous: float | None,
+    yield_current: float | None,
+) -> dict:
+    """Apply the Nifty factor thresholds and decision matrix to parsed readings.
 
+    Missing inputs produce a null signal and cannot produce a confirmed factor.
+    The matrix is: Up/Up -> Momentum, Up/Down -> Value, Down/Down -> Quality.
+    """
+    gdp_signal = None if gdp is None else 1 if gdp >= 6 else -1 if gdp <= 5 else 0
+    pmi_signal = None if pmi is None else 1 if pmi > 55 else -1 if pmi < 50 else 0
 
-def classify_rates(inflation: float | None, trend: str) -> str:
-    if inflation is None or trend not in {"Rising", "Falling"}:
-        return "Insufficient data"
-    a = "Down" if inflation < 5 else "Up" if inflation > 6 else "Neutral"
-    b = "Up" if trend == "Rising" else "Down"
-    return a if a == b else "Mixed / Neutral"
+    if gdp_signal is None or pmi_signal is None:
+        growth = "Insufficient data"
+    elif gdp_signal == 1 and pmi_signal == 1:
+        growth = "Up"
+    elif gdp_signal == -1 and pmi_signal == -1:
+        growth = "Down"
+    else:
+        growth = "Mixed / Neutral"
+
+    inflation_signal = (
+        None if inflation is None else -1 if inflation < 5 else 1 if inflation > 6 else 0
+    )
+    if yield_previous is None or yield_current is None:
+        yield_signal = None
+    elif yield_current < yield_previous:
+        yield_signal = -1
+    elif yield_current > yield_previous:
+        yield_signal = 1
+    else:
+        yield_signal = 0
+
+    if inflation_signal is None or yield_signal is None:
+        rates = "Insufficient data"
+    elif inflation_signal == -1 and yield_signal == -1:
+        rates = "Down"
+    elif inflation_signal == 1 and yield_signal == 1:
+        rates = "Up"
+    else:
+        rates = "Mixed / Neutral"
+
+    factor = {
+        ("Up", "Up"): "Momentum",
+        ("Up", "Down"): "Value",
+        ("Down", "Down"): "Quality",
+    }.get((growth, rates), "No confirmed recommendation")
+
+    return {
+        "GDP Signal": gdp_signal,
+        "PMI Signal": pmi_signal,
+        "Inflation Signal": inflation_signal,
+        "Bond Yield Signal": yield_signal,
+        "Growth Environment": growth,
+        "Interest Rate Environment": rates,
+        "Primary Factor": factor,
+    }
 
 
 def build_snapshot(db: sqlite3.Connection, timestamp: datetime) -> dict:
@@ -250,12 +296,14 @@ def build_snapshot(db: sqlite3.Connection, timestamp: datetime) -> dict:
     freshness["bond_yield"]["fresh"] &= two_fresh_yields
 
     value = lambda name: indicators[name]["value"] if freshness[name]["fresh"] else None
-    growth = classify_growth(value("gdp"), value("pmi"))
-    rates = classify_rates(value("inflation"), yield_direction)
-    recommendation = {("Up", "Down"): "Momentum", ("Up", "Up"): "Value",
-                      ("Down", "Down"): "Quality"}.get((growth, rates), "No recommendation")
-    if not all(entry["fresh"] for entry in freshness.values()):
-        recommendation = "No recommendation"
+    yield_previous = float(recent_yields[1][1]) if two_fresh_yields else None
+    yield_current = float(recent_yields[0][1]) if two_fresh_yields else None
+    decision = nifty_factor_decision(
+        value("gdp"), value("pmi"), value("inflation"), yield_previous, yield_current
+    )
+    growth = decision["Growth Environment"]
+    rates = decision["Interest Rate Environment"]
+    recommendation = decision["Primary Factor"]
 
     reasons = []
     missing = [name for name, fresh in freshness.items() if not fresh["fresh"]]
@@ -273,7 +321,9 @@ def build_snapshot(db: sqlite3.Connection, timestamp: datetime) -> dict:
         reasons.append("Inflation and the 10-year yield direction do not agree.")
     if not missing and (growth, rates) == ("Down", "Up"):
         reasons.append("The framework does not define Growth Down + Rates Up.")
-    if recommendation != "No recommendation":
+    if recommendation == "No confirmed recommendation" and not missing and not reasons:
+        reasons.append("The signal combination does not select a factor in the decision matrix.")
+    if recommendation != "No confirmed recommendation":
         reasons.append(f"{growth} growth and {rates} rates map to {recommendation}.")
     if not reasons:
         reasons.append("The available signals do not produce a defined factor.")
@@ -281,6 +331,7 @@ def build_snapshot(db: sqlite3.Connection, timestamp: datetime) -> dict:
     snapshot = {
         "updated_at": timestamp.astimezone(INDIA_TZ).isoformat(timespec="seconds"),
         "recommendation": recommendation, "growth_state": growth, "rates_state": rates,
+        "decision": decision,
         "yield_direction": yield_direction, "reason": " ".join(reasons),
         "freshness": freshness, "indicators": indicators,
     }
