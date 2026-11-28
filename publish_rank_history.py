@@ -88,7 +88,10 @@ def summarize_snapshot(rows: list[dict]) -> dict:
         score = number(row.get("Momentum_V2_Score_%"))
         if score is not None:
             for key in keys:
-                add_group(score_groups, key, (0, 1), 0 if score >= 75 else 1)
+                counts = score_groups.setdefault(key, [0, 0, 0])
+                counts[0 if score >= 75 else 1] += 1
+                if number(row.get("V2_52W_High")) is None:
+                    counts[2] += 1
 
         above_ema = boolean(row.get("V2_Close_Above_EMA50"))
         ema_bull = boolean(row.get("V2_EMA20_Above_EMA50"))
@@ -108,12 +111,14 @@ def summarize_snapshot(rows: list[dict]) -> dict:
                 returns[horizon].setdefault(key, []).append(value)
 
     score_summary = {}
-    for key, (positive, below) in score_groups.items():
+    for key, (positive, below, missing_52w) in score_groups.items():
         total = positive + below
         score_summary[key] = {
             "strong_count": positive,
             "below_threshold_count": below,
             "total_count": total,
+            "scoreable_52w_count": total - missing_52w,
+            "missing_52w_count": missing_52w,
             "strong_pct": round(positive / total * 100, 2) if total else None,
         }
 
@@ -257,6 +262,7 @@ def export_rank_history() -> int:
                     "Sector_Index": sector_index or metrics.get("Sector_Index", ""),
                     "V2_Close_Above_EMA50": metrics.get("V2_Close_Above_EMA50"),
                     "V2_EMA20_Above_EMA50": metrics.get("V2_EMA20_Above_EMA50"),
+                    "V2_52W_High": metrics.get("V2_52W_High"),
                 })
             sector_momentum = {}
             sector_tickers = {}
