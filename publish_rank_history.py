@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from statistics import mean, median
 from pathlib import Path
 
 
@@ -31,55 +32,168 @@ SECTOR_INDEXES = {
 }
 
 
-def summarize_breadth(rows: list[dict]) -> dict:
-    groups: dict[tuple[str, str | None], list[int]] = {}
-    missing_sector = 0
-    missing_market_cap = 0
+def number(value) -> float | None:
+    try:
+        parsed = float(str(value).replace("%", "").replace(",", "").strip())
+        return parsed if parsed == parsed else None
+    except (TypeError, ValueError):
+        return None
+
+
+def boolean(value) -> bool | None:
+    if value in (True, 1, "True", "true", "1"):
+        return True
+    if value in (False, 0, "False", "false", "0"):
+        return False
+    return None
+
+
+def split_groups(groups: dict) -> dict:
+    sectors, by_cap = {}, {}
+    for (sector, cap), value in groups.items():
+        if cap is None:
+            sectors[sector] = value
+        else:
+            by_cap.setdefault(sector, {})[cap] = value
+    return {"sectors": sectors, "sector_market_caps": by_cap}
+
+
+def summarize_snapshot(rows: list[dict]) -> dict:
+    score_groups: dict[tuple[str, str | None], list[int]] = {}
+    trend_groups: dict[tuple[str, str | None], list[int]] = {}
+    returns: dict[str, dict[tuple[str, str | None], list[float]]] = {
+        horizon: {} for horizon in ("1M", "3M", "6M")
+    }
+    universe_returns: dict[str, list[float]] = {key: [] for key in returns}
+    cap_universe_returns: dict[str, dict[str, list[float]]] = {
+        key: {} for key in returns
+    }
+    missing_sector = missing_market_cap = 0
+    valid_caps = {"Large Cap", "Mid Cap", "Small Cap"}
+
+    def add_group(groups, key, values, value):
+        counts = groups.setdefault(key, [0] * len(values))
+        counts[value] += 1
+
     for row in rows:
-        try:
-            score = float(row["Momentum_V2_Score_%"])
-        except (TypeError, ValueError):
-            continue
-        sector = row["Sector"]
-        cap = row["Market_Cap"]
+        sector, cap = row["Sector"], row["Market_Cap"]
         if not sector or sector == "Unclassified":
             missing_sector += 1
             continue
-        counts = groups.setdefault((sector, None), [0, 0])
-        counts[0 if score >= 75 else 1] += 1
-        if cap in ("Large Cap", "Mid Cap", "Small Cap"):
-            counts = groups.setdefault((sector, cap), [0, 0])
-            counts[0 if score >= 75 else 1] += 1
-        else:
+        cap = cap if cap in valid_caps else None
+        if cap is None:
             missing_market_cap += 1
+        keys = [(sector, None)] + ([(sector, cap)] if cap else [])
 
-    def summary(counts: list[int]) -> dict:
-        positive, negative = counts
-        total = positive + negative
-        positive_pct = positive / total * 100 if total else 0
-        negative_pct = negative / total * 100 if total else 0
-        return {
-            "positive_count": positive,
-            "negative_count": negative,
+        score = number(row.get("Momentum_V2_Score_%"))
+        if score is not None:
+            for key in keys:
+                add_group(score_groups, key, (0, 1), 0 if score >= 75 else 1)
+
+        above_ema = boolean(row.get("V2_Close_Above_EMA50"))
+        ema_bull = boolean(row.get("V2_EMA20_Above_EMA50"))
+        if above_ema is not None and ema_bull is not None:
+            state = 0 if above_ema and ema_bull else 1 if not above_ema and not ema_bull else 2
+            for key in keys:
+                add_group(trend_groups, key, (0, 1, 2), state)
+
+        for horizon in returns:
+            value = number(row.get(f"Return_{horizon}_%"))
+            if value is None:
+                continue
+            universe_returns[horizon].append(value)
+            if cap:
+                cap_universe_returns[horizon].setdefault(cap, []).append(value)
+            for key in keys:
+                returns[horizon].setdefault(key, []).append(value)
+
+    score_summary = {}
+    for key, (positive, below) in score_groups.items():
+        total = positive + below
+        score_summary[key] = {
+            "strong_count": positive,
+            "below_threshold_count": below,
             "total_count": total,
-            "positive_pct": round(positive_pct, 2),
-            "negative_pct": round(negative_pct, 2),
-            "net_breadth": round(positive_pct - negative_pct, 2),
+            "strong_pct": round(positive / total * 100, 2) if total else None,
         }
 
-    sectors: dict[str, dict] = {}
-    sector_market_caps: dict[str, dict] = {}
-    for (sector, cap), counts in groups.items():
-        if cap is None:
-            sectors[sector] = summary(counts)
-        else:
-            sector_market_caps.setdefault(sector, {})[cap] = summary(counts)
+    trend_summary = {}
+    for key, (bullish, bearish, neutral) in trend_groups.items():
+        total = bullish + bearish + neutral
+        trend_summary[key] = {
+            "bullish_count": bullish,
+            "bearish_count": bearish,
+            "neutral_count": neutral,
+            "total_count": total,
+            "bullish_pct": round(bullish / total * 100, 2) if total else None,
+            "bearish_pct": round(bearish / total * 100, 2) if total else None,
+            "neutral_pct": round(neutral / total * 100, 2) if total else None,
+            "net_breadth": round((bullish - bearish) / total * 100, 2) if total else None,
+        }
+
+    relative = {}
+    for horizon, groups in returns.items():
+        universe_median = median(universe_returns[horizon]) if universe_returns[horizon] else None
+        cap_medians = {
+            cap: median(values)
+            for cap, values in cap_universe_returns[horizon].items() if values
+        }
+        values = {}
+        for key, samples in groups.items():
+            sector_median = median(samples)
+            benchmark = universe_median if key[1] is None else cap_medians.get(key[1])
+            values[key] = {
+                "sector_median_pct": round(sector_median, 2),
+                "universe_median_pct": round(benchmark, 2) if benchmark is not None else None,
+                "relative_strength_pct": round(sector_median - benchmark, 2) if benchmark is not None else None,
+                "stock_count": len(samples),
+            }
+        relative[horizon] = split_groups(values)
+
     return {
-        "sectors": sectors,
-        "sector_market_caps": sector_market_caps,
+        "trend": {**split_groups(trend_summary), "excluded_missing_sector": missing_sector},
+        "strong_score": {**split_groups(score_summary), "excluded_missing_sector": missing_sector},
+        "relative_strength": relative,
         "excluded_missing_sector": missing_sector,
         "excluded_missing_market_cap": missing_market_cap,
     }
+
+
+def summarize_forward_returns(outcomes: list[tuple], sector_map: dict, caps: dict) -> dict:
+    grouped: dict[int, dict[tuple[str, str | None], list[float]]] = {}
+    universe: dict[int, list[float]] = {}
+    cap_universe: dict[int, dict[str, list[float]]] = {}
+    for horizon, symbol, return_pct in outcomes:
+        if return_pct is None:
+            continue
+        sector = SECTOR_OVERRIDES.get(symbol, sector_map.get(symbol, (None, None))[0])
+        if not sector or sector == "Unclassified":
+            continue
+        cap = caps.get(symbol)
+        cap = cap if cap in ("Large Cap", "Mid Cap", "Small Cap") else None
+        value = float(return_pct)
+        grouped.setdefault(horizon, {}).setdefault((sector, None), []).append(value)
+        universe.setdefault(horizon, []).append(value)
+        if cap:
+            grouped[horizon].setdefault((sector, cap), []).append(value)
+            cap_universe.setdefault(horizon, {}).setdefault(cap, []).append(value)
+
+    result = {}
+    for horizon, groups in grouped.items():
+        values = {}
+        for key, samples in groups.items():
+            benchmark_samples = universe[horizon] if key[1] is None else cap_universe.get(horizon, {}).get(key[1], [])
+            benchmark = mean(benchmark_samples) if benchmark_samples else None
+            sector_mean = mean(samples)
+            values[key] = {
+                "mean_return_pct": round(sector_mean, 2),
+                "median_return_pct": round(median(samples), 2),
+                "universe_mean_pct": round(benchmark, 2) if benchmark is not None else None,
+                "excess_mean_pct": round(sector_mean - benchmark, 2) if benchmark is not None else None,
+                "stock_count": len(samples),
+            }
+        result[str(horizon)] = split_groups(values)
+    return result
 
 
 def export_rank_history() -> int:
@@ -141,6 +255,8 @@ def export_rank_history() -> int:
                     "Return_3M_%": metrics.get("Return_3M_%", ""),
                     "Return_6M_%": metrics.get("Return_6M_%", ""),
                     "Sector_Index": sector_index or metrics.get("Sector_Index", ""),
+                    "V2_Close_Above_EMA50": metrics.get("V2_Close_Above_EMA50"),
+                    "V2_EMA20_Above_EMA50": metrics.get("V2_EMA20_Above_EMA50"),
                 })
             sector_momentum = {}
             sector_tickers = {}
@@ -161,7 +277,19 @@ def export_rank_history() -> int:
                             "from_date": prior_date,
                             "to_date": current_date,
                         }
-            breadth = summarize_breadth(rows)
+            breadth = summarize_snapshot(rows)
+            forward_rows = connection.execute(
+                "SELECT horizon,symbol,return_pct FROM rank_forward_outcomes "
+                "WHERE model='V2' AND snapshot_date=? AND horizon IN (5,20,60)",
+                (snapshot_date,),
+            ).fetchall() if connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rank_forward_outcomes'"
+            ).fetchone() else []
+            breadth["forward_returns"] = summarize_forward_returns(
+                forward_rows,
+                sectors,
+                caps,
+            )
             breadth_history.append({"snapshot_date": snapshot_date, **breadth})
             payload = {
                 "snapshot_date": snapshot_date,
