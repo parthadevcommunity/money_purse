@@ -164,8 +164,8 @@ def fetch_authorized_pmi_csv() -> dict | None:
     return {
         "indicator": "pmi", "reference_period": published.strftime("%Y-%m"),
         "publication_date": published.isoformat(), "value": value,
-        "unit": "headline manufacturing PMI", "source_name": "Authorized PMI CSV supplied by user",
-        "source_url": None,
+        "unit": "headline manufacturing PMI", "source_name": "User-supplied S&P Global PMI release",
+        "source_url": "https://www.pmi.spglobal.com/Public/Release/PressReleases",
     }
 
 
