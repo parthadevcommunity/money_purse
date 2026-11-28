@@ -266,10 +266,10 @@ def export_rank_history() -> int:
                 })
             sector_momentum = {}
             sector_tickers = {}
-            for symbol, (sector, ticker) in sectors.items():
-                sector = SECTOR_OVERRIDES.get(symbol, sector)
-                ticker = ticker or SECTOR_INDEXES.get(sector)
-                if sector and ticker:
+            for row in rows:
+                sector = row["Sector"]
+                ticker = row["Sector_Index"] or SECTOR_INDEXES.get(sector)
+                if sector and sector != "Unclassified" and ticker:
                     sector_tickers.setdefault(sector, ticker)
             for sector, ticker in sorted(sector_tickers.items()):
                 available = [item for item in index_prices.get(ticker, []) if item[0] <= snapshot_date]
@@ -283,6 +283,13 @@ def export_rank_history() -> int:
                             "from_date": prior_date,
                             "to_date": current_date,
                         }
+                else:
+                    sector_momentum[sector] = {
+                        "index": ticker,
+                        "change_pct": None,
+                        "from_date": None,
+                        "to_date": None,
+                    }
             breadth = summarize_snapshot(rows)
             forward_rows = connection.execute(
                 "SELECT horizon,symbol,return_pct FROM rank_forward_outcomes "
