@@ -11,6 +11,7 @@
     .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:22px 0 14px}input,select{min-height:42px;border:1px solid var(--line);border-radius:10px;background:#101a2d;color:var(--text);padding:0 13px;font:inherit}input{flex:1 1 260px;max-width:450px}select{min-width:170px}
     .panel{overflow:hidden;border:1px solid var(--line);border-radius:14px;background:#0e1729ef}.table-wrap{overflow:auto;max-height:76vh}table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;font-variant-numeric:tabular-nums}th,td{padding:10px 12px;text-align:left;white-space:nowrap;border-bottom:1px solid #202d43}th{position:sticky;top:0;background:#17243a;color:#d9e7fb;font-size:12px}th button{all:unset;cursor:pointer;font:inherit}th button:hover{color:var(--accent)}tbody tr:hover{background:#15233a}td:first-child,th:first-child{position:sticky;left:0;background:#111d31}th:first-child{z-index:2;background:#17243a}.foot{color:var(--muted);font-size:12px;margin:12px 2px}.error{padding:22px;color:#fecaca}
     .sector-heading{margin:20px 2px 9px;font-size:16px}.sector-note{color:var(--muted);font-size:12px;margin:-4px 2px 12px}.sector-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:16px}.sector-card{border:1px solid var(--line);border-radius:12px;background:#111a2e;padding:12px 14px}.sector-name{font-weight:650}.sector-index{color:var(--muted);font-size:12px;margin-top:3px}.sector-change{font-size:19px;font-weight:700;margin-top:7px;font-variant-numeric:tabular-nums}.positive{color:#86efac}.negative{color:#fca5a5}.unavailable{color:var(--muted);font-size:13px}
+    .breadth-panel{border:1px solid var(--line);border-radius:14px;background:#0e1729ef;padding:16px;margin:18px 0 24px}.breadth-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:12px 0}.breadth-toolbar label{color:var(--muted)}.breadth-chart{width:100%;overflow-x:auto}.breadth-chart svg{display:block;width:100%;min-width:640px;height:auto}.breadth-legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:8px}.legend-item{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}.legend-swatch{width:12px;height:3px;border-radius:3px}.breadth-current{color:var(--muted);font-size:12px;margin-top:10px}.breadth-grid{stroke:#26334d;stroke-width:1}.breadth-axis{fill:#9aabc7;font-size:12px}.breadth-line{fill:none;stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}.breadth-dot{stroke:#0e1729;stroke-width:2}
   </style>
 </head>
 <body><main>
@@ -23,6 +24,18 @@
     <select id="cap"><option value="">All market caps</option><option>Large Cap</option><option>Mid Cap</option><option>Small Cap</option><option>Unclassified</option></select>
     <select id="status"><option value="">All momentum statuses</option></select>
   </div>
+  <section class="breadth-panel" aria-labelledby="breadth-heading">
+    <h2 class="sector-heading" id="breadth-heading">Sector stock momentum breadth</h2>
+    <div class="sector-note">Stocks scoring 75 or higher are positive; below 75 are negative. Net breadth = positive % − negative %. Each stock has equal weight, so the percentage is comparable across sectors of different sizes.</div>
+    <div class="breadth-toolbar">
+      <label for="breadth-view">View</label><select id="breadth-view"><option value="sectors">Sectors overall</option><option value="market-cap">Sector by market cap</option></select>
+      <label for="breadth-sector" id="breadth-sector-label" hidden>Sector</label><select id="breadth-sector" hidden></select>
+      <label for="breadth-range">Timeframe</label><select id="breadth-range"><option value="30">1 month</option><option value="90" selected>3 months</option><option value="180">6 months</option><option value="all">All history</option></select>
+    </div>
+    <div class="breadth-chart" id="breadth-chart"><div class="unavailable">Loading sector momentum history…</div></div>
+    <div class="breadth-legend" id="breadth-legend"></div>
+    <div class="breadth-current" id="breadth-current"></div>
+  </section>
   <h2 class="sector-heading">Sector index momentum</h2>
   <div class="sector-note" id="sector-note">Change in each mapped sector index between its latest saved closes on or before the selected rank date. This is index performance, not the average stock return.</div>
   <div class="sector-grid" id="sector-summary"></div>
@@ -31,11 +44,38 @@
 </main>
 <script>
 const $=s=>document.querySelector(s), esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let allRows=[],sectorMomentum={},sortKey='Rank',sortDir=1;
+let allRows=[],sectorMomentum={},breadthHistory=[],sortKey='Rank',sortDir=1;
 const cols=['Rank','Stock','Sector','Market_Cap','Momentum_V2_Score_%','Momentum_Status','Close','Return_1M_%','Return_3M_%','Return_6M_%','Sector_Index'];
+const chartColors=['#7dd3fc','#86efac','#fbbf24','#c4b5fd','#f9a8d4','#fb7185','#67e8f9','#bef264','#fdba74','#a5b4fc','#e879f9'];
 function compare(a,b,key){let x=String(a[key]??''),y=String(b[key]??''),nx=Number(x),ny=Number(y);if(x!==''&&y!==''&&Number.isFinite(nx)&&Number.isFinite(ny))return nx-ny;return x.localeCompare(y,undefined,{numeric:true,sensitivity:'base'});}
 function render(){const q=$('#search').value.trim().toLowerCase(),sector=$('#sector').value,cap=$('#cap').value,status=$('#status').value;let rows=allRows.filter(r=>(!q||r.Stock.toLowerCase().includes(q)||String(r.Sector).toLowerCase().includes(q))&&(!sector||r.Sector===sector)&&(!cap||r.Market_Cap===cap)&&(!status||r.Momentum_Status===status));rows.sort((a,b)=>sortDir*compare(a,b,sortKey));const head=`<thead><tr>${cols.map(c=>`<th><button data-key="${esc(c)}">${esc(c)} ${sortKey===c?(sortDir===1?'↑':'↓'):''}</button></th>`).join('')}</tr></thead>`;const body=rows.map(r=>`<tr>${cols.map(c=>`<td>${esc(r[c])}</td>`).join('')}</tr>`).join('');$('#table').innerHTML=`<table>${head}<tbody>${body}</tbody></table>`;$('#info').textContent=`V2 rank snapshot ${$('#date').value} · ${rows.length.toLocaleString()} of ${allRows.length.toLocaleString()} stocks`;const entries=Object.entries(sectorMomentum).sort((a,b)=>a[0].localeCompare(b[0]));$('#sector-summary').innerHTML=entries.length?entries.map(([name,item])=>{const cls=item.change_pct>0?'positive':item.change_pct<0?'negative':'';const sign=item.change_pct>0?'+':'';return `<article class="sector-card"><div class="sector-name">${esc(name)}</div><div class="sector-index">${esc(item.index)} · ${esc(item.from_date)} → ${esc(item.to_date)}</div><div class="sector-change ${cls}">${sign}${Number(item.change_pct).toFixed(2)}%</div></article>`}).join(''):'<div class="unavailable">No sector index price history is available for this rank date. Refresh the scanner and republish ranks to populate this summary.</div>';document.querySelectorAll('th button').forEach(b=>b.onclick=()=>{if(sortKey===b.dataset.key)sortDir*=-1;else{sortKey=b.dataset.key;sortDir=1}render()});}
 async function loadDate(){try{const date=$('#date').value, data=await fetch(`ranks/${encodeURIComponent(date)}.json`,{cache:'no-store'}).then(r=>{if(!r.ok)throw Error(`Could not load ${date}`);return r.json()});allRows=data.rows;sectorMomentum=data.sector_momentum||{};const sectors=[...new Set(allRows.map(r=>r.Sector).filter(Boolean))].sort();$('#sector').innerHTML='<option value="">All sectors</option>'+sectors.map(s=>`<option>${esc(s)}</option>`).join('');const statuses=[...new Set(allRows.map(r=>r.Momentum_Status).filter(Boolean))].sort();$('#status').innerHTML='<option value="">All momentum statuses</option>'+statuses.map(s=>`<option>${esc(s)}</option>`).join('');render()}catch(e){$('#table').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
-async function init(){try{const data=await fetch('ranks-index.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw Error('Rank index is not published yet');return r.json()});$('#date').innerHTML=data.snapshot_dates.map(d=>`<option>${esc(d)}</option>`).join('');if(!data.snapshot_dates.length)throw Error('No V2 snapshots found');$('#date').value=data.snapshot_dates[0];await loadDate()}catch(e){$('#info').textContent='Rank data unavailable';$('#table').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
+function renderBreadth(){
+  const view=$('#breadth-view').value, sectorSelect=$('#breadth-sector'), range=$('#breadth-range').value;
+  const availableSectors=[...new Set(breadthHistory.flatMap(s=>Object.keys(s.sector_market_caps||{})))].sort();
+  sectorSelect.innerHTML=availableSectors.map(s=>`<option>${esc(s)}</option>`).join('');
+  const selectedSector=availableSectors.includes(sectorSelect.dataset.value)?sectorSelect.dataset.value:(availableSectors[0]||'');
+  sectorSelect.value=selectedSector;sectorSelect.dataset.value=selectedSector;
+  $('#breadth-sector-label').hidden=view!=='market-cap';sectorSelect.hidden=view!=='market-cap';
+  let snapshots=[...breadthHistory].sort((a,b)=>a.snapshot_date.localeCompare(b.snapshot_date));
+  if(range!=='all'&&snapshots.length){const latest=new Date(`${snapshots.at(-1).snapshot_date}T00:00:00Z`);latest.setUTCDate(latest.getUTCDate()-Number(range));const start=latest.toISOString().slice(0,10);snapshots=snapshots.filter(s=>s.snapshot_date>=start)}
+  const grouped=view==='sectors';
+  const seriesNames=grouped?[...new Set(snapshots.flatMap(s=>Object.keys(s.sectors||{})))].sort():['Large Cap','Mid Cap','Small Cap','Unclassified'];
+  const colors=Object.fromEntries(seriesNames.map((name,i)=>[name,chartColors[i%chartColors.length]]));
+  const series=seriesNames.map(name=>({name,values:snapshots.map(s=>({date:s.snapshot_date,summary:grouped?s.sectors?.[name]:s.sector_market_caps?.[selectedSector]?.[name]}))}));
+  if(!snapshots.length||!series.some(line=>line.values.some(point=>point.summary))){$('#breadth-chart').innerHTML='<div class="unavailable">No momentum breadth history is available for this selection.</div>';$('#breadth-legend').innerHTML='';$('#breadth-current').textContent='';return}
+  const W=900,H=340,L=58,R=20,T=18,B=42,innerW=W-L-R,innerH=H-T-B;
+  const x=i=>L+(snapshots.length<2?innerW/2:i/(snapshots.length-1)*innerW), y=v=>T+(100-v)/200*innerH;
+  const grid=[-100,-50,0,50,100].map(v=>`<g><line class="breadth-grid" x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}"/><text class="breadth-axis" x="${L-9}" y="${y(v)+4}" text-anchor="end">${v}</text></g>`).join('');
+  const xTicks=[...new Set([0,Math.floor((snapshots.length-1)/2),snapshots.length-1])];
+  const labels=xTicks.map(i=>`<text class="breadth-axis" x="${x(i)}" y="${H-12}" text-anchor="${i===0?'start':i===snapshots.length-1?'end':'middle'}">${esc(snapshots[i].snapshot_date)}</text>`).join('');
+  const paths=series.map(line=>{const valid=line.values.map((p,i)=>p.summary?{...p,i}:null).filter(Boolean);if(!valid.length)return '';const path=valid.map((p,j)=>`${j?'L':'M'}${x(p.i).toFixed(1)},${y(p.summary.net_breadth).toFixed(1)}`).join(' ');return `<path class="breadth-line" stroke="${colors[line.name]}" d="${path}"/>${valid.map(p=>`<circle class="breadth-dot" cx="${x(p.i).toFixed(1)}" cy="${y(p.summary.net_breadth).toFixed(1)}" r="3.5" fill="${colors[line.name]}"><title>${esc(line.name)} · ${esc(p.date)} · net breadth ${p.summary.net_breadth}% · ${p.summary.positive_count}/${p.summary.total_count} positive</title></circle>`).join('')}`}).join('');
+  $('#breadth-chart').innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Sector stock momentum net breadth over time, from minus 100 to plus 100 percent">${grid}${labels}${paths}</svg>`;
+  $('#breadth-legend').innerHTML=series.map(line=>`<div class="legend-item"><span class="legend-swatch" style="background:${colors[line.name]}"></span>${esc(line.name)}</div>`).join('');
+  const latest=snapshots.at(-1), current=series.map(line=>{const item=line.values.slice().reverse().find(p=>p.summary);return item?{name:line.name,...item.summary}:null}).filter(Boolean).sort((a,b)=>b.net_breadth-a.net_breadth);
+  $('#breadth-current').textContent=`Latest (${latest.snapshot_date}) — `+current.map(item=>`${item.name}: ${item.net_breadth>0?'+':''}${item.net_breadth}% net breadth (${item.positive_count}/${item.total_count} positive)`).join(' · ');
+}
+async function init(){try{const [data,breadth]=await Promise.all([fetch('ranks-index.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw Error('Rank index is not published yet');return r.json()}),fetch('sector-breadth.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw Error('Sector momentum history is not published yet');return r.json()})]);breadthHistory=breadth.snapshots||[];$('#date').innerHTML=data.snapshot_dates.map(d=>`<option>${esc(d)}</option>`).join('');if(!data.snapshot_dates.length)throw Error('No V2 snapshots found');$('#date').value=data.snapshot_dates[0];renderBreadth();await loadDate()}catch(e){$('#info').textContent='Rank data unavailable';$('#table').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
 $('#date').addEventListener('change',loadDate);['search','sector','cap','status'].forEach(id=>$('#'+id).addEventListener(id==='search'?'input':'change',render));init();
+$('#breadth-view').addEventListener('change',renderBreadth);$('#breadth-sector').addEventListener('change',e=>{e.target.dataset.value=e.target.value;renderBreadth()});$('#breadth-range').addEventListener('change',renderBreadth);
 </script></body></html>
